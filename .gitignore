@@ -6,6 +6,22 @@ __pycache__/
 # C extensions
 *.so
 
+# Mex
+.mex/
+
+# Cursor
+.cursor/
+
+# Claude
+.claude/
+CLAUDE.md
+
+# Grok
+.grok/
+
+# Gemini
+.gemini/
+
 # Distribution / packaging
 .Python
 build/

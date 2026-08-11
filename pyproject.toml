@@ -12,6 +12,7 @@ dependencies = [
     "dcor>=0.7",
     "duckdb>=1.6.0.dev343",
     "framecache",
+    "graspologic",
     "ipykernel>=7.3.0",
     "ipython>=9.16.1",
     "networkx>=3.6.1",
@@ -42,3 +43,4 @@ prerelease = "allow"
 
 [tool.uv.sources]
 framecache = { git = "https://github.com/FulgentMcGuffin/framecache.git" }
+graspologic = { git = "https://github.com/FulgentMcGuffin/graspologic.git" }

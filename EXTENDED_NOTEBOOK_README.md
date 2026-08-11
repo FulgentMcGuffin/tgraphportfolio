@@ -61,18 +61,7 @@ Selects the **top 6 most-moving nodes** (ranked by total latent-space displaceme
 
 ### Prerequisites
 
-`graspologic` is **not** in the main project dependencies: it requires `numpy<2` while this repo pins `numpy>=2.5` for `dcor`/numba. Use a **separate virtualenv** for the evolution notebook chapters B–D:
-
-```bash
-cd d:\Code\tgraphportfolio
-uv venv .venv-evolution
-.venv-evolution\Scripts\activate   # Windows
-uv pip install -e ".[evolution]"   # if an evolution extra is added later
-# Or manually in that venv (numpy 1.x stack):
-uv pip install "graspologic>=3.4,<4" polars duckdb networkx dcor pyvis ipykernel
-```
-
-For the GUI and core pipeline, use the default env only: `uv sync` then `uv run tgraph-gui`.
+`graspologic` is installed by `uv sync` from the [Python 3.13 / NumPy 2–compatible fork](https://github.com/FulgentMcGuffin/graspologic). Same environment as the GUI (`uv run tgraph-gui`).
 
 ### Recommended Workflow
 
@@ -165,7 +154,7 @@ After running the full notebook, verify:
 
 ## Related Files
 
-- `pyproject.toml`: Updated with `graspologic>=3.4,<4` dependency
+- `pyproject.toml`: `graspologic` from [FulgentMcGuffin/graspologic](https://github.com/FulgentMcGuffin/graspologic) (Python 3.13 / NumPy 2)
 - `src/tgraphportfolio/dax_network_evolution.ipynb`: Main notebook (75 cells)
 - This file: `EXTENDED_NOTEBOOK_README.md`
 

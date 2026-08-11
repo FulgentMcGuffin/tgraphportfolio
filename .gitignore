@@ -12,6 +12,10 @@ __pycache__/
 # Cursor
 .cursor/
 
+# Notebook-generated pyvis output
+_pyvis_corr_network.html
+_smoke_network.html
+
 # Claude
 .claude/
 CLAUDE.md

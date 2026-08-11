@@ -7,12 +7,11 @@ name = "tgraphportfolio"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "dcor>=0.7",
     "duckdb>=1.6.0.dev343",
     "framecache",
-    "graspologic>=3.4,<4",
     "ipykernel>=7.3.0",
     "ipython>=9.16.1",
     "networkx>=3.6.1",

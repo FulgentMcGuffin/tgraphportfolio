@@ -61,12 +61,18 @@ Selects the **top 6 most-moving nodes** (ranked by total latent-space displaceme
 
 ### Prerequisites
 
+`graspologic` is **not** in the main project dependencies: it requires `numpy<2` while this repo pins `numpy>=2.5` for `dcor`/numba. Use a **separate virtualenv** for the evolution notebook chapters B–D:
+
 ```bash
 cd d:\Code\tgraphportfolio
-uv add "graspologic>=3.4,<4"
+uv venv .venv-evolution
+.venv-evolution\Scripts\activate   # Windows
+uv pip install -e ".[evolution]"   # if an evolution extra is added later
+# Or manually in that venv (numpy 1.x stack):
+uv pip install "graspologic>=3.4,<4" polars duckdb networkx dcor pyvis ipykernel
 ```
 
-The dependency is already listed in `pyproject.toml`. Restart the Jupyter kernel after installing.
+For the GUI and core pipeline, use the default env only: `uv sync` then `uv run tgraph-gui`.
 
 ### Recommended Workflow
 

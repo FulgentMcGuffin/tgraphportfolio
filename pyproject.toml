@@ -12,6 +12,7 @@ dependencies = [
     "dcor>=0.7",
     "duckdb>=1.6.0.dev343",
     "framecache",
+    "graspologic>=3.4,<4",
     "ipykernel>=7.3.0",
     "ipython>=9.16.1",
     "networkx>=3.6.1",

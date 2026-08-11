@@ -7,7 +7,7 @@ uv sync
 uv run tgraph-gui
 ```
 
-In the GUI, point the sidebar at a DuckDB equity EOD database, choose columns / filters, then click **Build Network**.
+In the GUI, point the sidebar at a DuckDB database, choose columns / filters, then click **Build Network**.
 
 | Distance correlation network (DAX30 close) | Degree distribution (CAC40 close) |
 |:---:|:---:|

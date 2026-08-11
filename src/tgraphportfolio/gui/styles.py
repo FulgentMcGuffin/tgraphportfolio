@@ -99,6 +99,9 @@ QComboBox, QLineEdit, QDateEdit, QDoubleSpinBox, QListWidget {{
     selection-background-color: {ACCENT};
     min-height: 22px;
 }}
+QDateEdit, QDoubleSpinBox {{
+    padding-right: 22px;
+}}
 QComboBox:hover, QLineEdit:hover, QDateEdit:hover, QListWidget:hover,
 QDoubleSpinBox:hover {{
     border-color: #bae6fd;
@@ -135,11 +138,45 @@ QComboBox QAbstractItemView {{
     selection-background-color: {ACCENT};
     outline: none;
 }}
-QDateEdit::up-button, QDateEdit::down-button,
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-    background-color: {BG_CONTROL_HOVER};
+QDateEdit::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 18px;
     border: none;
-    width: 16px;
+    border-left: 1px solid #475569;
+    border-bottom: 1px solid #475569;
+    background-color: {BG_CONTROL_HOVER};
+    border-top-right-radius: 5px;
+}}
+QDateEdit::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 18px;
+    border: none;
+    border-left: 1px solid #475569;
+    border-top: 1px solid #475569;
+    background-color: {BG_CONTROL_HOVER};
+    border-bottom-right-radius: 5px;
+}}
+QDateEdit::up-button:hover, QDoubleSpinBox::up-button:hover,
+QDateEdit::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background-color: #475569;
+}}
+QDateEdit::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid {BORDER};
+}}
+QDateEdit::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {BORDER};
 }}
 
 QListWidget {{
@@ -207,6 +244,38 @@ QFrame#Canvas {{
     background-color: {BG_APP};
     border: 1px solid #2a2f3a;
     border-radius: 10px;
+}}
+QTabWidget#ResultTabs {{
+    background-color: {BG_APP};
+    border: none;
+}}
+QTabWidget#ResultTabs::pane {{
+    background-color: {BG_APP};
+    border: 1px solid #2a2f3a;
+    border-radius: 8px;
+    top: -1px;
+}}
+QTabWidget#ResultTabs QTabBar::tab {{
+    background-color: {BG_SIDEBAR};
+    color: {TEXT_MUTED};
+    border: 1px solid #2a2f3a;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 7px 14px;
+    margin-right: 3px;
+}}
+QTabWidget#ResultTabs QTabBar::tab:selected {{
+    background-color: #24292e;
+    color: {TEXT_LOG};
+    border-color: {BORDER};
+}}
+QTabWidget#ResultTabs QTabBar::tab:hover {{
+    color: #ffffff;
+}}
+QLabel#HistLabel {{
+    background-color: transparent;
+    color: {TEXT_MUTED};
 }}
 QPlainTextEdit#ProcessLog {{
     background-color: {BG_SIDEBAR};

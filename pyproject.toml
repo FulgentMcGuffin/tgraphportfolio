@@ -11,6 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "dcor>=0.7",
     "duckdb>=1.6.0.dev343",
+    "framecache",
     "ipykernel>=7.3.0",
     "ipython>=9.16.1",
     "networkx>=3.6.1",
@@ -38,3 +39,6 @@ packages = ["src/tgraphportfolio"]
 [tool.uv]
 package = true
 prerelease = "allow"
+
+[tool.uv.sources]
+framecache = { git = "https://github.com/FulgentMcGuffin/framecache.git" }

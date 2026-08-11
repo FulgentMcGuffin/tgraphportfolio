@@ -12,6 +12,9 @@ __pycache__/
 # Cursor
 .cursor/
 
+.secrets/
+.secrets
+
 # Notebook-generated pyvis output
 _pyvis_corr_network.html
 _smoke_network.html

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
+import networkx as nx
 import polars as pl
 
 from .config import PipelineConfig
 from .data_access import load_table
+from .degree_hist import histogram_title, render_degree_histogram
+from .gui_cache import GuiDataCache
 from .measures import compute_measure
 from .network import build_corr_nx, pivot_to_wide
 from .pyvis_plot import graph_to_html
@@ -15,6 +19,15 @@ from .transforms import apply_transforms
 
 ProgressCallback = Callable[[int, int, str], None]
 StatusCallback = Callable[[str], None]
+
+
+@dataclass
+class PipelineResult:
+    """Artifacts produced by a successful pipeline run."""
+
+    network_html: str
+    degree_hist_png: bytes
+    graph: nx.Graph
 
 
 def _needed_columns(cfg: PipelineConfig) -> list[str]:
@@ -65,39 +78,58 @@ def run_pipeline(
     *,
     progress: ProgressCallback | None = None,
     status: StatusCallback | None = None,
-) -> str:
-    """Run the full pipeline and return pyvis HTML."""
+    data_cache: GuiDataCache | None = None,
+) -> PipelineResult:
+    """Run the full pipeline and return network HTML + degree histogram PNG.
+
+    When ``data_cache`` is provided (GUI session), Polars frames for load /
+    prepare / measure are memoized via framecache in an in-memory SQLite DB.
+    """
 
     def _status(msg: str) -> None:
         if status is not None:
             status(msg)
 
-    _status("Loading data…")
-    df = _prepare_frame(cfg, status=status)
+    if data_cache is not None:
+        df = data_cache.get_prepared(cfg, status=status)
+    else:
+        _status("Loading data…")
+        df = _prepare_frame(cfg, status=status)
+
     if df.is_empty():
         raise ValueError("No rows remain after filtering / date range / transforms.")
-    _status(f"Loaded {df.height:,} rows after filters/transforms.")
+    _status(f"Prepared frame: {df.height:,} rows.")
 
-    _status(
-        f"Pivoting wide on {cfg.value_column!r} "
-        f"(date={cfg.date_column!r}, node={cfg.name_column!r})…"
-    )
-    wide = pivot_to_wide(
-        df,
-        date_column=cfg.date_column,
-        name_column=cfg.name_column,
-        value_column=cfg.value_column,
-    )
-    nodes = [c for c in wide.columns if c != cfg.date_column]
-    if len(nodes) < 2:
-        raise ValueError("Need at least two nodes to build a network.")
-    _status(f"Wide matrix: {wide.height:,} dates × {len(nodes)} nodes.")
+    if data_cache is not None:
+        measure_hit = data_cache.has_measure(cfg)
+        measure_df = data_cache.get_measure_matrix(
+            cfg, progress=progress, status=status
+        )
+        if measure_hit and progress is not None:
+            progress(1, 1, "cached")
+        nodes = measure_df.columns
+        _status(f"Measure matrix: {len(nodes)} × {len(nodes)}.")
+    else:
+        _status(
+            f"Pivoting wide on {cfg.value_column!r} "
+            f"(date={cfg.date_column!r}, node={cfg.name_column!r})…"
+        )
+        wide = pivot_to_wide(
+            df,
+            date_column=cfg.date_column,
+            name_column=cfg.name_column,
+            value_column=cfg.value_column,
+        )
+        nodes = [c for c in wide.columns if c != cfg.date_column]
+        if len(nodes) < 2:
+            raise ValueError("Need at least two nodes to build a network.")
+        _status(f"Wide matrix: {wide.height:,} dates × {len(nodes)} nodes.")
 
-    n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
-    _status(f"Computing {cfg.measure} ({n_pairs:,} pairs)…")
-    measure_df = compute_measure(
-        cfg.measure, wide.select(nodes), nodes, progress=progress
-    )
+        n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
+        _status(f"Computing {cfg.measure} ({n_pairs:,} pairs)…")
+        measure_df = compute_measure(
+            cfg.measure, wide.select(nodes), nodes, progress=progress
+        )
 
     _status(
         f"Building network (independence threshold={cfg.independent_threshold:.2f})…"
@@ -112,5 +144,18 @@ def run_pipeline(
 
     _status("Rendering interactive network…")
     html = graph_to_html(graph, title=cfg.title)
+
+    hist_title = histogram_title(
+        cfg.value_column,
+        filter_column=cfg.filter_column if cfg.filter_value else None,
+        filter_value=cfg.filter_value,
+    )
+    _status("Rendering degree histogram…")
+    hist_png = render_degree_histogram(graph, hist_title)
+
     _status("Done.")
-    return html
+    return PipelineResult(
+        network_html=html,
+        degree_hist_png=hist_png,
+        graph=graph,
+    )

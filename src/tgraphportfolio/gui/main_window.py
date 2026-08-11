@@ -7,7 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QThread, QUrl, Qt
-from PySide6.QtGui import QColor, QPalette, QTextCursor
+from PySide6.QtGui import QColor, QPalette, QPixmap, QTextCursor
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -39,7 +40,9 @@ from tgraphportfolio.analysis.data_access import (
     list_columns,
     list_tables,
 )
+from tgraphportfolio.analysis.gui_cache import GuiDataCache
 from tgraphportfolio.analysis.measures import available_measures
+from tgraphportfolio.analysis.pipeline import PipelineResult
 from tgraphportfolio.analysis.transforms import available_transforms
 from tgraphportfolio.gui.styles import APP_STYLE, BG_SIDEBAR
 from tgraphportfolio.gui.workers import PipelineWorker
@@ -61,7 +64,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("TGraph Portfolio")
-        self.resize(1440, 900)
+        self.resize(1440, 990)  # ~10% taller so histogram title/xlabel fit
         self.setStyleSheet(APP_STYLE)
 
         self._db_path: Path | None = None
@@ -70,6 +73,8 @@ class MainWindow(QMainWindow):
         self._temp_html: Path | None = None
         self._last_progress_line: int | None = None
         self._busy = False
+        # Session-scoped Polars memoization (in-memory SQLite via framecache).
+        self._data_cache = GuiDataCache.create()
 
         root = QWidget()
         root.setObjectName("Root")
@@ -244,18 +249,43 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        canvas = QFrame()
-        canvas.setObjectName("Canvas")
-        canvas_layout = QVBoxLayout(canvas)
-        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("ResultTabs")
 
+        # --- Network tab ---
+        network_page = QFrame()
+        network_page.setObjectName("Canvas")
+        network_layout = QVBoxLayout(network_page)
+        network_layout.setContentsMargins(0, 0, 0, 0)
         self.web = QWebEngineView()
         self.web.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self.web.setHtml(self._placeholder_html())
-        canvas_layout.addWidget(self.web)
-        layout.addWidget(canvas, stretch=3)
+        network_layout.addWidget(self.web)
+        self.tabs.addTab(network_page, "Network")
+
+        # --- Degree histogram tab ---
+        hist_page = QFrame()
+        hist_page.setObjectName("Canvas")
+        hist_layout = QVBoxLayout(hist_page)
+        hist_layout.setContentsMargins(8, 8, 8, 8)
+        self.hist_label = QLabel()
+        self.hist_label.setObjectName("HistLabel")
+        self.hist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hist_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.hist_label.setMinimumHeight(320)
+        self._set_hist_placeholder()
+        hist_scroll = QScrollArea()
+        hist_scroll.setWidgetResizable(True)
+        hist_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        hist_scroll.setWidget(self.hist_label)
+        hist_layout.addWidget(hist_scroll)
+        self.tabs.addTab(hist_page, "Degree histogram")
+
+        layout.addWidget(self.tabs, stretch=3)
 
         log_title = QLabel("PROCESS LOG")
         log_title.setObjectName("LogTitle")
@@ -313,6 +343,29 @@ class MainWindow(QMainWindow):
           </div>
         </div></body></html>
         """
+
+    def _set_hist_placeholder(self, message: str | None = None) -> None:
+        text = message or (
+            "Degree histogram will appear here after you build a network."
+        )
+        self.hist_label.clear()
+        self.hist_label.setText(text)
+        self.hist_label.setStyleSheet(
+            "color: #94a3b8; font-size: 14px; background: transparent;"
+        )
+
+    def _set_hist_building(self) -> None:
+        self._set_hist_placeholder(
+            "Building… previous histogram cleared. See the process log for progress."
+        )
+
+    def _show_histogram_png(self, png_bytes: bytes) -> None:
+        pixmap = QPixmap()
+        pixmap.loadFromData(png_bytes, "PNG")
+        self.hist_label.setStyleSheet("background: transparent;")
+        self.hist_label.setPixmap(pixmap)
+        self.hist_label.setText("")
+        self.hist_label.adjustSize()
 
     # ------------------------------------------------------------- logging
     def _append_log(self, message: str, *, replace_last: bool = False) -> None:
@@ -540,13 +593,15 @@ class MainWindow(QMainWindow):
         self.process_log.clear()
         self.lbl_status.setText("Starting…")
         self._append_log("Starting pipeline…")
-        # Clear any previously rendered network before the new run.
+        # Clear any previously rendered views before the new run.
         self.web.setHtml(self._building_html())
+        self._set_hist_building()
+        self.tabs.setCurrentIndex(0)
 
         # Keep strong Python refs — a local worker is GC'd and the thread dies
         # before run() executes (see "QThread: Destroyed while thread is still running").
         self._worker_thread = QThread(self)
-        self._worker = PipelineWorker(config)
+        self._worker = PipelineWorker(config, data_cache=self._data_cache)
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
@@ -583,14 +638,17 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._worker_thread = None
 
-    def _on_finished(self, html: str) -> None:
+    def _on_finished(self, result: object) -> None:
+        if not isinstance(result, PipelineResult):
+            self._on_failed(f"Unexpected pipeline result type: {type(result)!r}")
+            return
         self.progress.setValue(100)
         self.lbl_status.setText("Network ready.")
         self._append_log("Network ready.")
         tmp = tempfile.NamedTemporaryFile(
             prefix="tgraph_", suffix=".html", delete=False
         )
-        tmp.write(html.encode("utf-8"))
+        tmp.write(result.network_html.encode("utf-8"))
         tmp.close()
         if self._temp_html and self._temp_html.exists():
             try:
@@ -599,6 +657,7 @@ class MainWindow(QMainWindow):
                 pass
         self._temp_html = Path(tmp.name)
         self.web.load(QUrl.fromLocalFile(str(self._temp_html.resolve())))
+        self._show_histogram_png(result.degree_hist_png)
         self._cleanup_worker()
         self._set_busy(False)
 
@@ -606,6 +665,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.lbl_status.setText("Failed.")
         self._append_log(f"ERROR: {message}")
+        self._set_hist_placeholder("Build failed — histogram unavailable.")
         self._cleanup_worker()
         self._set_busy(False)
         QMessageBox.critical(self, "Pipeline failed", message)
@@ -619,4 +679,8 @@ class MainWindow(QMainWindow):
                 self._temp_html.unlink()
             except OSError:
                 pass
+        try:
+            self._data_cache.frame_cache.cache_container.close()
+        except Exception:  # noqa: BLE001
+            pass
         super().closeEvent(event)

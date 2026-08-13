@@ -59,8 +59,8 @@ def render_weighted_degree_heatmap(
     # Heatmap with dark-friendly colormap (grayscale works better on dark)
     im = ax.imshow(matrix, aspect="auto", cmap="Blues", interpolation="nearest")
 
-    # Reduce x-axis tick labels for legibility (show every 4th date)
-    tick_interval = max(1, len(window_ends_sorted) // 8)  # Show ~8 labels
+    # Show x-axis tick labels for legibility (show ~16 labels)
+    tick_interval = max(1, len(window_ends_sorted) // 16)  # Show ~16 labels
     tick_indices = np.arange(0, len(window_ends_sorted), tick_interval)
     ax.set_xticks(tick_indices)
     ax.set_xticklabels(

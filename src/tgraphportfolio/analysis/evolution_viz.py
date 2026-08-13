@@ -54,7 +54,7 @@ def render_weighted_degree_heatmap(
     # Render
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
     fig.patch.set_facecolor("#0f172a")
-    ax.set_facecolor("#1e293b")
+    ax.set_facecolor("#0f172a")
 
     # Heatmap
     im = ax.imshow(matrix, aspect="auto", cmap="Blues", interpolation="nearest")
@@ -62,20 +62,20 @@ def render_weighted_degree_heatmap(
     # Axes
     ax.set_xticks(np.arange(len(window_ends_sorted)))
     ax.set_yticks(np.arange(len(nodes)))
-    ax.set_xticklabels([str(d) for d in window_ends_sorted], rotation=45, ha="right")
+    ax.set_xticklabels([str(d) for d in window_ends_sorted], rotation=45, ha="right", fontsize=7)
     ax.set_yticklabels(nodes, fontsize=6)
 
-    ax.set_xlabel("Window end date", color="#e2e8f0", fontsize=10)
-    ax.set_ylabel("Stock", color="#e2e8f0", fontsize=10)
+    ax.set_xlabel("Window end date", color="#e2e8f0", fontsize=9)
+    ax.set_ylabel("Stock", color="#e2e8f0", fontsize=9)
     ax.set_title("DAX30 node weighted-degree evolution", color="#e2e8f0", fontsize=12)
 
     # Colorbar
     cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label("Weighted degree", rotation=270, labelpad=20, color="#e2e8f0")
-    cbar.ax.tick_params(colors="#e2e8f0")
+    cbar.set_label("Weighted degree", rotation=270, labelpad=20, color="#e2e8f0", fontsize=8)
+    cbar.ax.tick_params(colors="#e2e8f0", labelsize=7)
 
     # Tick colors
-    ax.tick_params(colors="#e2e8f0")
+    ax.tick_params(colors="#e2e8f0", labelsize=7)
 
     plt.tight_layout()
 
@@ -135,7 +135,7 @@ def render_centrality_trajectories(
     # Render
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
     fig.patch.set_facecolor("#0f172a")
-    ax.set_facecolor("#1e293b")
+    ax.set_facecolor("#0f172a")
 
     # Color palette
     colors = [
@@ -160,14 +160,14 @@ def render_centrality_trajectories(
             markersize=4,
         )
 
-    ax.set_xlabel("Window end date", color="#e2e8f0", fontsize=10)
-    ax.set_ylabel(f"{centrality_metric.title()} centrality", color="#e2e8f0", fontsize=10)
+    ax.set_xlabel("Window end date", color="#e2e8f0", fontsize=9)
+    ax.set_ylabel(f"{centrality_metric.title()} centrality", color="#e2e8f0", fontsize=9)
     ax.set_title(f"Most variable DAX30 nodes ({centrality_metric})", color="#e2e8f0", fontsize=12)
 
-    ax.legend(loc="best", fontsize=8, facecolor="#0f172a", edgecolor="#e2e8f0",
+    ax.legend(loc="best", fontsize=7, facecolor="#0f172a", edgecolor="#e2e8f0",
               labelcolor="#e2e8f0", framealpha=0.9)
     ax.grid(True, alpha=0.2, color="#e2e8f0")
-    ax.tick_params(colors="#e2e8f0")
+    ax.tick_params(colors="#e2e8f0", labelsize=7)
 
     # Axis spines
     for spine in ax.spines.values():

@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import io
 from collections import Counter
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import seaborn as sns
 from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
+
+# Figures here are built directly via the Figure API (not pyplot.subplots) so
+# rendering can safely run on a background QThread -- pyplot's state machine is
+# tied to the active GUI backend and warns/fails when touched off the main thread.
 
 # Match GUI dark theme (kept local so analysis does not import gui).
 BG_APP = "#0f172a"
@@ -24,6 +23,93 @@ TEXT_LOG = "#7dd3fc"
 LABEL_COLOR = "#ffffff"
 LABEL_SIZE = 8.5
 MAX_NODE_LABELS = 5
+
+
+class _HistogramCursor:
+    """Interactive cursor for histogram hover tooltips."""
+
+    def __init__(self, ax, degrees, bin_edges, canvas):
+        """degrees: dict mapping node -> degree"""
+        self.ax = ax
+        self.degrees = degrees
+        self.bin_edges = bin_edges
+        self.canvas = canvas
+        self.annot = None
+        self.cid = canvas.mpl_connect("motion_notify_event", self.on_move)
+
+    def on_move(self, event):
+        """Handle mouse motion events."""
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            if self.annot and self.annot.get_visible():
+                self.annot.set_visible(False)
+                try:
+                    self.canvas.draw_idle()
+                except Exception:
+                    pass
+            return
+
+        # Find bar at this x position
+        x = event.xdata
+        best_patch = None
+        best_height = 0
+
+        for patch in self.ax.patches:
+            left = float(patch.get_x())
+            width = float(patch.get_width())
+            if left <= x <= left + width:
+                height = float(patch.get_height())
+                if height > best_height:
+                    best_height = height
+                    best_patch = patch
+
+        if best_patch is None:
+            if self.annot and self.annot.get_visible():
+                self.annot.set_visible(False)
+            return
+
+        # Get bar info
+        left = float(best_patch.get_x())
+        width = float(best_patch.get_width())
+        height = float(best_patch.get_height())
+        center_x = left + width / 2
+
+        # Find nodes in this bin
+        bin_idx = np.searchsorted(self.bin_edges, center_x) - 1
+        if bin_idx < 0:
+            bin_idx = 0
+        if bin_idx >= len(self.bin_edges) - 1:
+            bin_idx = len(self.bin_edges) - 2
+
+        target_degree = int(center_x)
+        nodes_here = [str(n) for n, d in self.degrees.items() if int(d) == target_degree]
+
+        # Create annotation only once
+        if self.annot is None:
+            self.annot = self.ax.annotate(
+                "",
+                xy=(center_x, height),
+                xytext=(10, 10),
+                textcoords="offset points",
+                bbox=dict(boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9),
+                color="#e2e8f0",
+                fontsize=9,
+                zorder=100,
+            )
+
+        # Update annotation
+        node_list = ", ".join(nodes_here[:3])
+        if len(nodes_here) > 3:
+            node_list += f" +{len(nodes_here) - 3}"
+
+        text = f"Degree: {target_degree}\nCount: {height:.1f}\nNodes: {node_list}"
+        self.annot.set_text(text)
+        self.annot.xy = (center_x, height)
+        self.annot.set_visible(True)
+
+        try:
+            self.canvas.draw_idle()
+        except Exception:
+            pass
 
 
 def histogram_title(
@@ -44,19 +130,20 @@ def render_degree_histogram(
     title: str,
     *,
     bins: int = 15,
-) -> bytes:
-    """Return a PNG of the degree histogram (same data as the notebook plot)."""
+) -> Figure:
+    """Return a matplotlib Figure of the degree histogram."""
     degrees = dict(graph.degree())
     deg_list = list(degrees.values())
     if not deg_list:
-        return _empty_png("No nodes to plot.")
+        return _empty_figure("No nodes to plot.")
 
     mean_deg = float(np.mean(deg_list))
     lo, hi = int(min(deg_list)), int(max(deg_list))
     # Explicit edges so node labels can sit on the same bar centers as histplot.
     _counts, bin_edges = np.histogram(deg_list, bins=bins)
 
-    fig, ax = plt.subplots(figsize=(9, 6.4), dpi=120)
+    fig = Figure(figsize=(9, 6.4), dpi=100)
+    ax = fig.add_subplot(111)
     fig.patch.set_facecolor(BG_APP)
     ax.set_facecolor(BG_APP)
 
@@ -105,10 +192,11 @@ def render_degree_histogram(
         text.set_color(TEXT_LOG)
 
     fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor=fig.get_facecolor(), bbox_inches="tight")
-    plt.close(fig)
-    return buf.getvalue()
+
+    # Store data for cursor attachment later (after FigureCanvas is created)
+    fig._histogram_cursor_data = (ax, degrees, bin_edges)
+
+    return fig
 
 
 def _nodes_with_degree(degrees: dict[object, int], target: int) -> list[str]:
@@ -208,13 +296,12 @@ def _annotate_extreme_nodes(
         _annotate_stack(ax, x, names, y0=y0, dy=dy)
 
 
-def _empty_png(message: str) -> bytes:
-    fig, ax = plt.subplots(figsize=(9, 6), dpi=120)
+def _empty_figure(message: str) -> Figure:
+    """Return a placeholder figure with a message."""
+    fig = Figure(figsize=(9, 6), dpi=100)
+    ax = fig.add_subplot(111)
     fig.patch.set_facecolor(BG_APP)
     ax.set_facecolor(BG_APP)
     ax.axis("off")
     ax.text(0.5, 0.5, message, ha="center", va="center", color=TEXT_MUTED, fontsize=14)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
-    plt.close(fig)
-    return buf.getvalue()
+    return fig

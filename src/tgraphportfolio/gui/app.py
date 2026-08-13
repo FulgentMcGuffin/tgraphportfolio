@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import sys
 
+# Set matplotlib backend before any GUI imports
+import matplotlib
+matplotlib.use("Qt5Agg")
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 

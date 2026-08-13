@@ -33,6 +33,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvas
+from matplotlib.figure import Figure
 
 from tgraphportfolio.analysis.config import PipelineConfig
 from tgraphportfolio.analysis.data_access import (
@@ -43,7 +46,7 @@ from tgraphportfolio.analysis.data_access import (
 )
 from tgraphportfolio.analysis.evolution import EvolutionConfig
 from tgraphportfolio.analysis.gui_cache import GuiDataCache
-from tgraphportfolio.analysis.measures import available_measures
+from tgraphportfolio.analysis.measures import available_measures, measure_short_label
 from tgraphportfolio.analysis.pipeline import PipelineResult
 from tgraphportfolio.analysis.transforms import available_transforms
 from tgraphportfolio.gui.evolution_settings_dialog import EvolutionSettingsDialog
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
         self._current_n_nodes: int | None = None
         self._cached_df_returns = None
         self._cached_dates = None
+        self._current_measure_tag: str = "measure"
 
         root = QWidget()
         root.setObjectName("Root")
@@ -289,6 +293,9 @@ class MainWindow(QMainWindow):
         hist_page.setObjectName("Canvas")
         hist_layout = QVBoxLayout(hist_page)
         hist_layout.setContentsMargins(8, 8, 8, 8)
+        self.hist_container = QWidget()
+        self.hist_canvas_layout = QVBoxLayout(self.hist_container)
+        self.hist_canvas_layout.setContentsMargins(0, 0, 0, 0)
         self.hist_label = QLabel()
         self.hist_label.setObjectName("HistLabel")
         self.hist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -297,11 +304,8 @@ class MainWindow(QMainWindow):
         )
         self.hist_label.setMinimumHeight(320)
         self._set_hist_placeholder()
-        hist_scroll = QScrollArea()
-        hist_scroll.setWidgetResizable(True)
-        hist_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        hist_scroll.setWidget(self.hist_label)
-        hist_layout.addWidget(hist_scroll)
+        self.hist_canvas_layout.addWidget(self.hist_label)
+        hist_layout.addWidget(self.hist_container)
         self.tabs.addTab(hist_page, "Degree histogram")
 
         # --- Evolution: Weighted Degree tab ---
@@ -309,6 +313,9 @@ class MainWindow(QMainWindow):
         evolution_deg_page.setObjectName("Canvas")
         evolution_deg_layout = QVBoxLayout(evolution_deg_page)
         evolution_deg_layout.setContentsMargins(8, 8, 8, 8)
+        self.evolution_degree_container = QWidget()
+        self.evolution_degree_layout = QVBoxLayout(self.evolution_degree_container)
+        self.evolution_degree_layout.setContentsMargins(0, 0, 0, 0)
         self.evolution_degree_label = QLabel()
         self.evolution_degree_label.setObjectName("HistLabel")
         self.evolution_degree_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -317,11 +324,8 @@ class MainWindow(QMainWindow):
         )
         self.evolution_degree_label.setMinimumHeight(400)
         self._set_evolution_deg_placeholder()
-        evolution_deg_scroll = QScrollArea()
-        evolution_deg_scroll.setWidgetResizable(True)
-        evolution_deg_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        evolution_deg_scroll.setWidget(self.evolution_degree_label)
-        evolution_deg_layout.addWidget(evolution_deg_scroll)
+        self.evolution_degree_layout.addWidget(self.evolution_degree_label)
+        evolution_deg_layout.addWidget(self.evolution_degree_container)
         self.tabs.addTab(evolution_deg_page, "Evolution: Degrees")
 
         # --- Evolution: Centrality tab ---
@@ -329,6 +333,9 @@ class MainWindow(QMainWindow):
         evolution_cent_page.setObjectName("Canvas")
         evolution_cent_layout = QVBoxLayout(evolution_cent_page)
         evolution_cent_layout.setContentsMargins(8, 8, 8, 8)
+        self.evolution_centrality_container = QWidget()
+        self.evolution_centrality_layout = QVBoxLayout(self.evolution_centrality_container)
+        self.evolution_centrality_layout.setContentsMargins(0, 0, 0, 0)
         self.evolution_centrality_label = QLabel()
         self.evolution_centrality_label.setObjectName("HistLabel")
         self.evolution_centrality_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -337,12 +344,49 @@ class MainWindow(QMainWindow):
         )
         self.evolution_centrality_label.setMinimumHeight(400)
         self._set_evolution_cent_placeholder()
-        evolution_cent_scroll = QScrollArea()
-        evolution_cent_scroll.setWidgetResizable(True)
-        evolution_cent_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        evolution_cent_scroll.setWidget(self.evolution_centrality_label)
-        evolution_cent_layout.addWidget(evolution_cent_scroll)
+        self.evolution_centrality_layout.addWidget(self.evolution_centrality_label)
+        evolution_cent_layout.addWidget(self.evolution_centrality_container)
         self.tabs.addTab(evolution_cent_page, "Evolution: Centrality")
+
+        # --- Evolution: Extended Metrics tab ---
+        evolution_ext_page = QFrame()
+        evolution_ext_page.setObjectName("Canvas")
+        evolution_ext_layout = QVBoxLayout(evolution_ext_page)
+        evolution_ext_layout.setContentsMargins(8, 8, 8, 8)
+        self.evolution_extended_container = QWidget()
+        self.evolution_extended_layout = QVBoxLayout(self.evolution_extended_container)
+        self.evolution_extended_layout.setContentsMargins(0, 0, 0, 0)
+        self.evolution_extended_label = QLabel()
+        self.evolution_extended_label.setObjectName("HistLabel")
+        self.evolution_extended_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.evolution_extended_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.evolution_extended_label.setMinimumHeight(400)
+        self._set_evolution_extended_placeholder()
+        self.evolution_extended_layout.addWidget(self.evolution_extended_label)
+        evolution_ext_layout.addWidget(self.evolution_extended_container)
+        self.tabs.addTab(evolution_ext_page, "Evolution: Extended Metrics")
+
+        # --- Evolution: Communities tab ---
+        evolution_comm_page = QFrame()
+        evolution_comm_page.setObjectName("Canvas")
+        evolution_comm_layout = QVBoxLayout(evolution_comm_page)
+        evolution_comm_layout.setContentsMargins(8, 8, 8, 8)
+        self.evolution_community_container = QWidget()
+        self.evolution_community_layout = QVBoxLayout(self.evolution_community_container)
+        self.evolution_community_layout.setContentsMargins(0, 0, 0, 0)
+        self.evolution_community_label = QLabel()
+        self.evolution_community_label.setObjectName("HistLabel")
+        self.evolution_community_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.evolution_community_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.evolution_community_label.setMinimumHeight(400)
+        self._set_evolution_community_placeholder()
+        self.evolution_community_layout.addWidget(self.evolution_community_label)
+        evolution_comm_layout.addWidget(self.evolution_community_container)
+        self.tabs.addTab(evolution_comm_page, "Evolution: Communities")
 
         layout.addWidget(self.tabs, stretch=3)
 
@@ -404,38 +448,58 @@ class MainWindow(QMainWindow):
         """
 
     def _set_hist_placeholder(self, message: str | None = None) -> None:
+        """Set placeholder text for histogram tab."""
+        # Clear any existing canvas and close figures
+        while self.hist_canvas_layout.count():
+            widget = self.hist_canvas_layout.takeAt(0).widget()
+            if isinstance(widget, FigureCanvas) and widget.figure:
+                plt.close(widget.figure)
+            if widget:
+                widget.deleteLater()
+
+        # Add placeholder label
         text = message or (
             "Degree histogram will appear here after you build a network."
         )
-        self.hist_label.clear()
-        self.hist_label.setText(text)
-        self.hist_label.setStyleSheet(
-            "color: #94a3b8; font-size: 14px; background: transparent;"
-        )
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.hist_canvas_layout.addWidget(label)
 
     def _set_hist_building(self) -> None:
         self._set_hist_placeholder(
             "Building… previous histogram cleared. See the process log for progress."
         )
 
-    def _show_histogram_png(self, png_bytes: bytes) -> None:
-        pixmap = QPixmap()
-        pixmap.loadFromData(png_bytes, "PNG")
-        # Scale pixmap to fit available space while maintaining aspect ratio
-        max_width = self.hist_label.width()
-        max_height = self.hist_label.height()
-        if max_width > 0 and max_height > 0:
-            # Scale to fit within bounds while maintaining aspect ratio
-            scaled_pixmap = pixmap.scaled(
-                max_width,
-                max_height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            pixmap = scaled_pixmap
-        self.hist_label.setStyleSheet("background: transparent;")
-        self.hist_label.setPixmap(pixmap)
-        self.hist_label.setText("")
+    def _show_histogram_png(self, fig: Figure) -> None:
+        """Display degree histogram as interactive matplotlib canvas."""
+        try:
+            # Clear any existing widgets and close old figures
+            while self.hist_canvas_layout.count():
+                widget = self.hist_canvas_layout.takeAt(0).widget()
+                if isinstance(widget, FigureCanvas) and widget.figure:
+                    plt.close(widget.figure)
+                if widget:
+                    widget.deleteLater()
+
+            # Create and add canvas
+            canvas = FigureCanvas(fig)
+            canvas.setStyleSheet("background-color: transparent;")
+            self.hist_canvas_layout.addWidget(canvas)
+            canvas.draw()
+
+            # Attach cursor if data is available (store reference to prevent garbage collection)
+            if hasattr(fig, "_histogram_cursor_data"):
+                try:
+                    from tgraphportfolio.analysis.degree_hist import _HistogramCursor
+                    ax, degrees, bin_edges = fig._histogram_cursor_data
+                    cursor = _HistogramCursor(ax, degrees, bin_edges, canvas)
+                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                except Exception as e:
+                    self._append_log(f"Cursor error (histogram): {str(e)}")
+        except Exception as e:
+            self._append_log(f"Histogram display error: {str(e)}")
 
     # ------------------------------------------------------------- logging
     def _append_log(self, message: str, *, replace_last: bool = False) -> None:
@@ -661,6 +725,7 @@ class MainWindow(QMainWindow):
         self._set_busy(True)
         self.progress.setValue(0)
         self._last_progress_line = None
+        self._current_measure_tag = measure_short_label(config.measure)
         self.process_log.clear()
         self.lbl_status.setText("Starting…")
         self._append_log("Starting pipeline…")
@@ -700,8 +765,9 @@ class MainWindow(QMainWindow):
         bar_w = 24
         filled = int(bar_w * done / total)
         bar = "█" * filled + "░" * (bar_w - filled)
+        tag = getattr(self, "_current_measure_tag", "measure")
         self._append_log(
-            f"dcor {bar} {pct:3d}% ({done}/{total})  {desc}",
+            f"{tag} {bar} {pct:3d}% ({done}/{total})  {desc}",
             replace_last=True,
         )
         self.lbl_status.setText(f"Computing pairs: {desc}")
@@ -729,7 +795,7 @@ class MainWindow(QMainWindow):
                 pass
         self._temp_html = Path(tmp.name)
         self.web.load(QUrl.fromLocalFile(str(self._temp_html.resolve())))
-        self._show_histogram_png(result.degree_hist_png)
+        self._show_histogram_png(result.degree_hist_fig)
 
         # Store prepared data for evolution worker
         if self._worker is not None:
@@ -761,66 +827,198 @@ class MainWindow(QMainWindow):
 
     def _set_evolution_deg_placeholder(self, message: str | None = None) -> None:
         """Set placeholder text for evolution degree tab."""
+        # Clear any existing canvas and close figures
+        while self.evolution_degree_layout.count():
+            widget = self.evolution_degree_layout.takeAt(0).widget()
+            if isinstance(widget, FigureCanvas) and widget.figure:
+                plt.close(widget.figure)
+            if widget:
+                widget.deleteLater()
+
+        # Add placeholder label
         text = message or "Evolution metrics will appear here after you build a network."
-        self.evolution_degree_label.clear()
-        self.evolution_degree_label.setText(text)
-        self.evolution_degree_label.setStyleSheet(
-            "color: #94a3b8; font-size: 14px; background: transparent;"
-        )
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.evolution_degree_layout.addWidget(label)
 
     def _set_evolution_cent_placeholder(self, message: str | None = None) -> None:
         """Set placeholder text for evolution centrality tab."""
+        # Clear any existing canvas and close figures
+        while self.evolution_centrality_layout.count():
+            widget = self.evolution_centrality_layout.takeAt(0).widget()
+            if isinstance(widget, FigureCanvas) and widget.figure:
+                plt.close(widget.figure)
+            if widget:
+                widget.deleteLater()
+
+        # Add placeholder label
         text = message or "Evolution metrics will appear here after you build a network."
-        self.evolution_centrality_label.clear()
-        self.evolution_centrality_label.setText(text)
-        self.evolution_centrality_label.setStyleSheet(
-            "color: #94a3b8; font-size: 14px; background: transparent;"
-        )
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.evolution_centrality_layout.addWidget(label)
+
+    def _set_evolution_extended_placeholder(self, message: str | None = None) -> None:
+        """Set placeholder text for evolution extended-metrics tab."""
+        # Clear any existing canvas and close figures
+        while self.evolution_extended_layout.count():
+            widget = self.evolution_extended_layout.takeAt(0).widget()
+            if isinstance(widget, FigureCanvas) and widget.figure:
+                plt.close(widget.figure)
+            if widget:
+                widget.deleteLater()
+
+        # Add placeholder label
+        text = message or "Evolution metrics will appear here after you build a network."
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.evolution_extended_layout.addWidget(label)
+
+    def _set_evolution_community_placeholder(self, message: str | None = None) -> None:
+        """Set placeholder text for evolution communities tab."""
+        # Clear any existing canvas and close figures
+        while self.evolution_community_layout.count():
+            widget = self.evolution_community_layout.takeAt(0).widget()
+            if isinstance(widget, FigureCanvas) and widget.figure:
+                plt.close(widget.figure)
+            if widget:
+                widget.deleteLater()
+
+        # Add placeholder label
+        text = message or "Evolution metrics will appear here after you build a network."
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.evolution_community_layout.addWidget(label)
 
     def _set_evolution_building(self) -> None:
         """Set building state for evolution tabs."""
         self._set_evolution_deg_placeholder("Computing evolution metrics...")
         self._set_evolution_cent_placeholder("Computing evolution metrics...")
+        self._set_evolution_extended_placeholder("Computing evolution metrics...")
+        self._set_evolution_community_placeholder("Computing evolution metrics...")
 
-    def _show_evolution_heatmap_png(self, png_bytes: bytes) -> None:
+    def _show_evolution_heatmap_png(self, fig: Figure) -> None:
         """Display evolution degree heatmap."""
-        pixmap = QPixmap()
-        pixmap.loadFromData(png_bytes, "PNG")
-        # Scale pixmap to fit available space while maintaining aspect ratio
-        max_width = self.evolution_degree_label.width()
-        max_height = self.evolution_degree_label.height()
-        if max_width > 0 and max_height > 0:
-            # Scale to fit within bounds while maintaining aspect ratio
-            scaled_pixmap = pixmap.scaled(
-                max_width,
-                max_height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            pixmap = scaled_pixmap
-        self.evolution_degree_label.setStyleSheet("background: transparent;")
-        self.evolution_degree_label.setPixmap(pixmap)
-        self.evolution_degree_label.setText("")
+        try:
+            # Clear any existing widgets and close old figures
+            while self.evolution_degree_layout.count():
+                widget = self.evolution_degree_layout.takeAt(0).widget()
+                if isinstance(widget, FigureCanvas) and widget.figure:
+                    plt.close(widget.figure)
+                if widget:
+                    widget.deleteLater()
 
-    def _show_evolution_centrality_png(self, png_bytes: bytes) -> None:
+            # Create and add canvas
+            canvas = FigureCanvas(fig)
+            canvas.setStyleSheet("background-color: transparent;")
+            self.evolution_degree_layout.addWidget(canvas)
+            canvas.draw()
+
+            # Attach cursor if data is available (store reference to prevent garbage collection)
+            if hasattr(fig, "_heatmap_cursor_data"):
+                try:
+                    from tgraphportfolio.analysis.evolution_viz import _HeatmapCursor
+                    ax, matrix, nodes, window_ends_sorted = fig._heatmap_cursor_data
+                    cursor = _HeatmapCursor(ax, matrix, nodes, window_ends_sorted, canvas)
+                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                except Exception as e:
+                    self._append_log(f"Cursor error (heatmap): {str(e)}")
+        except Exception as e:
+            self._append_log(f"Heatmap display error: {str(e)}")
+
+    def _show_evolution_centrality_png(self, fig: Figure) -> None:
         """Display evolution centrality trajectories."""
-        pixmap = QPixmap()
-        pixmap.loadFromData(png_bytes, "PNG")
-        # Scale pixmap to fit available space while maintaining aspect ratio
-        max_width = self.evolution_centrality_label.width()
-        max_height = self.evolution_centrality_label.height()
-        if max_width > 0 and max_height > 0:
-            # Scale to fit within bounds while maintaining aspect ratio
-            scaled_pixmap = pixmap.scaled(
-                max_width,
-                max_height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            pixmap = scaled_pixmap
-        self.evolution_centrality_label.setStyleSheet("background: transparent;")
-        self.evolution_centrality_label.setPixmap(pixmap)
-        self.evolution_centrality_label.setText("")
+        try:
+            # Clear any existing widgets and close old figures
+            while self.evolution_centrality_layout.count():
+                widget = self.evolution_centrality_layout.takeAt(0).widget()
+                if isinstance(widget, FigureCanvas) and widget.figure:
+                    plt.close(widget.figure)
+                if widget:
+                    widget.deleteLater()
+
+            # Create and add canvas
+            canvas = FigureCanvas(fig)
+            canvas.setStyleSheet("background-color: transparent;")
+            self.evolution_centrality_layout.addWidget(canvas)
+            canvas.draw()
+
+            # Attach cursor if data is available (store reference to prevent garbage collection)
+            if hasattr(fig, "_line_cursor_data"):
+                try:
+                    from tgraphportfolio.analysis.evolution_viz import _LineCursor
+                    ax, line_data, line_objects, original_styles = fig._line_cursor_data
+                    cursor = _LineCursor(ax, line_data, canvas, line_objects, original_styles)
+                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                except Exception as e:
+                    self._append_log(f"Cursor error (centrality): {str(e)}")
+        except Exception as e:
+            self._append_log(f"Centrality display error: {str(e)}")
+
+    def _show_evolution_extended_png(self, fig: Figure) -> None:
+        """Display extended rolling network metrics (faceted grid)."""
+        try:
+            # Clear any existing widgets and close old figures
+            while self.evolution_extended_layout.count():
+                widget = self.evolution_extended_layout.takeAt(0).widget()
+                if isinstance(widget, FigureCanvas) and widget.figure:
+                    plt.close(widget.figure)
+                if widget:
+                    widget.deleteLater()
+
+            # Create and add canvas
+            canvas = FigureCanvas(fig)
+            canvas.setStyleSheet("background-color: transparent;")
+            self.evolution_extended_layout.addWidget(canvas)
+            canvas.draw()
+
+            # Attach cursor if data is available (store reference to prevent garbage collection)
+            if hasattr(fig, "_extended_cursor_data"):
+                try:
+                    from tgraphportfolio.analysis.evolution_viz import _MultiPanelCursor
+                    panels = fig._extended_cursor_data
+                    cursor = _MultiPanelCursor(panels, canvas)
+                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                except Exception as e:
+                    self._append_log(f"Cursor error (extended metrics): {str(e)}")
+        except Exception as e:
+            self._append_log(f"Extended metrics display error: {str(e)}")
+
+    def _show_evolution_community_png(self, fig: Figure) -> None:
+        """Display node x window community-membership heatmap."""
+        try:
+            # Clear any existing widgets and close old figures
+            while self.evolution_community_layout.count():
+                widget = self.evolution_community_layout.takeAt(0).widget()
+                if isinstance(widget, FigureCanvas) and widget.figure:
+                    plt.close(widget.figure)
+                if widget:
+                    widget.deleteLater()
+
+            # Create and add canvas
+            canvas = FigureCanvas(fig)
+            canvas.setStyleSheet("background-color: transparent;")
+            self.evolution_community_layout.addWidget(canvas)
+            canvas.draw()
+
+            # Attach cursor if data is available (store reference to prevent garbage collection)
+            if hasattr(fig, "_community_cursor_data"):
+                try:
+                    from tgraphportfolio.analysis.evolution_viz import _CommunityHeatmapCursor
+                    ax, matrix, nodes, window_ends = fig._community_cursor_data
+                    cursor = _CommunityHeatmapCursor(ax, matrix, nodes, window_ends, canvas)
+                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                except Exception as e:
+                    self._append_log(f"Cursor error (communities): {str(e)}")
+        except Exception as e:
+            self._append_log(f"Community heatmap display error: {str(e)}")
 
     def _show_evolution_settings(self) -> None:
         """Open evolution settings dialog."""
@@ -895,8 +1093,10 @@ class MainWindow(QMainWindow):
             return
 
         self._append_log("Evolution metrics rendered.")
-        self._show_evolution_heatmap_png(result.heatmap_png)
-        self._show_evolution_centrality_png(result.centrality_png)
+        self._show_evolution_heatmap_png(result.heatmap_fig)
+        self._show_evolution_centrality_png(result.centrality_fig)
+        self._show_evolution_extended_png(result.extended_metrics_fig)
+        self._show_evolution_community_png(result.community_fig)
         self.lbl_status.setText("Network and evolution analysis complete.")
 
         self._evolution_worker = None
@@ -908,6 +1108,8 @@ class MainWindow(QMainWindow):
         self._append_log(f"Evolution ERROR: {message}")
         self._set_evolution_deg_placeholder(f"Failed: {message}")
         self._set_evolution_cent_placeholder(f"Failed: {message}")
+        self._set_evolution_extended_placeholder(f"Failed: {message}")
+        self._set_evolution_community_placeholder(f"Failed: {message}")
         self._evolution_worker = None
         self._evolution_worker_thread = None
         self._set_busy(False)

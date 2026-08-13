@@ -143,9 +143,21 @@ MEASURE_LABELS: dict[str, str] = {
     "spearman_correlation": "Spearman correlation",
 }
 
+# Short tag for progress-bar/log display (e.g. "dcor 100% (780/780)").
+MEASURE_SHORT_LABELS: dict[str, str] = {
+    "distance_correlation": "dcor",
+    "pearson_correlation": "pearson",
+    "spearman_correlation": "spearman",
+}
+
 
 def available_measures() -> list[tuple[str, str]]:
     return [(key, MEASURE_LABELS.get(key, key)) for key in MEASURES]
+
+
+def measure_short_label(measure_id: str) -> str:
+    """Short tag for a measure id, for compact progress/log display."""
+    return MEASURE_SHORT_LABELS.get(measure_id, measure_id)
 
 
 def compute_measure(

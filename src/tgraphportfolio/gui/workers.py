@@ -5,14 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from matplotlib.figure import Figure
 from PySide6.QtCore import QObject, Signal, Slot
 import polars as pl
 
 from tgraphportfolio.analysis.config import PipelineConfig
-from tgraphportfolio.analysis.evolution import EvolutionConfig, compute_evolution_metrics
+from tgraphportfolio.analysis.evolution import (
+    EvolutionConfig,
+    compute_community_metrics,
+    compute_evolution_metrics,
+)
 from tgraphportfolio.analysis.evolution_viz import (
     render_weighted_degree_heatmap,
     render_centrality_trajectories,
+    render_extended_metrics,
+    render_community_heatmap,
 )
 from tgraphportfolio.analysis.gui_cache import GuiDataCache
 from tgraphportfolio.analysis.pipeline import PipelineResult, run_pipeline
@@ -23,8 +30,10 @@ class EvolutionResult:
     """Artifacts produced by evolution analysis."""
 
     node_metrics: pl.DataFrame
-    heatmap_png: bytes
-    centrality_png: bytes
+    heatmap_fig: Figure
+    centrality_fig: Figure
+    extended_metrics_fig: Figure
+    community_fig: Figure
 
 
 class PipelineWorker(QObject):
@@ -147,9 +156,9 @@ class EvolutionWorker(QObject):
         try:
             self.status.emit("Computing evolution metrics...")
 
-            # Compute metrics
+            # Compute metrics (node-level, network-level, and per-window graphs)
             # Use normalized column names (Date, Name, Close)
-            node_metrics = compute_evolution_metrics(
+            metrics_result = compute_evolution_metrics(
                 self.df_returns,
                 self.dates,
                 self.evolution_config,
@@ -159,29 +168,51 @@ class EvolutionWorker(QObject):
                 progress=self._progress_wrapper,
                 status=self.status.emit,
             )
+            node_metrics = metrics_result.node_metrics
+            network_metrics = metrics_result.network_metrics
+            graphs = metrics_result.graphs
 
             if node_metrics.is_empty():
                 self.failed.emit("No windows produced with minimum node count")
                 return
 
             self.status.emit("Rendering weighted-degree heatmap...")
-            heatmap_png = render_weighted_degree_heatmap(node_metrics)
+            heatmap_fig = render_weighted_degree_heatmap(node_metrics)
 
             self.status.emit("Rendering centrality trajectories...")
             n_unique_nodes = len(node_metrics["node"].unique())
-            centrality_png = render_centrality_trajectories(
+            centrality_fig = render_centrality_trajectories(
                 node_metrics,
                 centrality_metric=self.evolution_config.centrality,
                 n_nodes=min(self.evolution_config.n_top_nodes, n_unique_nodes),
             )
+
+            self.status.emit("Rendering extended rolling metrics...")
+            extended_metrics_fig = render_extended_metrics(network_metrics)
+
+            self.status.emit("Detecting communities per window...")
+            try:
+                community_metrics = compute_community_metrics(
+                    graphs,
+                    max_clusters=self.evolution_config.max_communities,
+                    min_nodes=self.evolution_config.min_nodes,
+                    progress=self._progress_wrapper,
+                    status=self.status.emit,
+                )
+                community_fig = render_community_heatmap(community_metrics)
+            except ValueError as exc:
+                self.status.emit(f"Community detection skipped: {exc}")
+                community_fig = render_community_heatmap(pl.DataFrame())
 
             self.status.emit("Evolution analysis complete.")
             self.progress.emit(1, 1, "done")
 
             result = EvolutionResult(
                 node_metrics=node_metrics,
-                heatmap_png=heatmap_png,
-                centrality_png=centrality_png,
+                heatmap_fig=heatmap_fig,
+                centrality_fig=centrality_fig,
+                extended_metrics_fig=extended_metrics_fig,
+                community_fig=community_fig,
             )
             self.finished.emit(result)
 

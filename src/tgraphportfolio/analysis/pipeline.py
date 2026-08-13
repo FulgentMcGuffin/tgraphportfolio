@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from matplotlib.figure import Figure
 import networkx as nx
 import polars as pl
 
@@ -26,7 +27,7 @@ class PipelineResult:
     """Artifacts produced by a successful pipeline run."""
 
     network_html: str
-    degree_hist_png: bytes
+    degree_hist_fig: Figure
     graph: nx.Graph
 
 
@@ -151,11 +152,11 @@ def run_pipeline(
         filter_value=cfg.filter_value,
     )
     _status("Rendering degree histogram…")
-    hist_png = render_degree_histogram(graph, hist_title)
+    hist_fig = render_degree_histogram(graph, hist_title)
 
     _status("Done.")
     return PipelineResult(
         network_html=html,
-        degree_hist_png=hist_png,
+        degree_hist_fig=hist_fig,
         graph=graph,
     )

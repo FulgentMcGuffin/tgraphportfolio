@@ -29,7 +29,7 @@ class EvolutionSettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Evolution Analysis Settings")
         self.setModal(True)
-        self.resize(400, 300)
+        self.resize(400, 340)
         self.setStyleSheet(APP_STYLE)
         self._force_dark_bg()
 
@@ -94,6 +94,12 @@ class EvolutionSettingsDialog(QDialog):
         self.spin_n_nodes.setValue(self.initial_config.n_top_nodes)
         form.addRow("Top nodes to plot:", self.spin_n_nodes)
 
+        # Max communities (for per-window ASE+KMeans community detection)
+        self.spin_max_communities = QSpinBox()
+        self.spin_max_communities.setRange(2, 15)
+        self.spin_max_communities.setValue(self.initial_config.max_communities)
+        form.addRow("Max communities:", self.spin_max_communities)
+
         # Independent threshold (read-only, informational)
         lbl_threshold = QLabel(f"{self.initial_config.independent_threshold:.2f}")
         form.addRow("Edge threshold:", lbl_threshold)
@@ -120,4 +126,5 @@ class EvolutionSettingsDialog(QDialog):
             independent_threshold=self.initial_config.independent_threshold,
             centrality=self.cmb_centrality.currentText(),
             n_top_nodes=self.spin_n_nodes.value(),
+            max_communities=self.spin_max_communities.value(),
         )

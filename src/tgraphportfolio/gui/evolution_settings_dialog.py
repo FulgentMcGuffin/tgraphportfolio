@@ -88,6 +88,12 @@ class EvolutionSettingsDialog(QDialog):
         self.cmb_centrality.setCurrentText(self.initial_config.centrality)
         form.addRow("Centrality measure:", self.cmb_centrality)
 
+        # Top N nodes (for centrality trajectories plot)
+        self.spin_n_nodes = QSpinBox()
+        self.spin_n_nodes.setRange(1, 20)
+        self.spin_n_nodes.setValue(self.initial_config.n_top_nodes)
+        form.addRow("Top nodes to plot:", self.spin_n_nodes)
+
         # Independent threshold (read-only, informational)
         lbl_threshold = QLabel(f"{self.initial_config.independent_threshold:.2f}")
         form.addRow("Edge threshold:", lbl_threshold)
@@ -113,4 +119,5 @@ class EvolutionSettingsDialog(QDialog):
             min_nodes=self.spin_min_nodes.value(),
             independent_threshold=self.initial_config.independent_threshold,
             centrality=self.cmb_centrality.currentText(),
+            n_top_nodes=self.spin_n_nodes.value(),
         )

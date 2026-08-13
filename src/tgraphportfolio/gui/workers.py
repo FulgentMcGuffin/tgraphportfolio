@@ -172,7 +172,7 @@ class EvolutionWorker(QObject):
             centrality_png = render_centrality_trajectories(
                 node_metrics,
                 centrality_metric=self.evolution_config.centrality,
-                n_nodes=min(10, n_unique_nodes),
+                n_nodes=min(self.evolution_config.n_top_nodes, n_unique_nodes),
             )
 
             self.status.emit("Evolution analysis complete.")

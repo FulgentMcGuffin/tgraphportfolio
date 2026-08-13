@@ -27,6 +27,7 @@ class EvolutionConfig:
         min_nodes: Minimum nodes required per window to include it (default 5).
         independent_threshold: Correlation threshold for network edges (default 0.33).
         centrality: Per-node centrality measure: "eigenvector", "betweenness", or "degree".
+        n_top_nodes: Number of top variable nodes to show in centrality plot (default 10).
     """
 
     window_size: int = 252
@@ -35,6 +36,7 @@ class EvolutionConfig:
     min_nodes: int = 5
     independent_threshold: float = 0.33
     centrality: str = "eigenvector"
+    n_top_nodes: int = 10
 
 
 def generate_windows(

@@ -56,13 +56,20 @@ def render_weighted_degree_heatmap(
     fig.patch.set_facecolor("#0f172a")
     ax.set_facecolor("#0f172a")
 
-    # Heatmap
+    # Heatmap with dark-friendly colormap (grayscale works better on dark)
     im = ax.imshow(matrix, aspect="auto", cmap="Blues", interpolation="nearest")
 
-    # Axes
-    ax.set_xticks(np.arange(len(window_ends_sorted)))
+    # Reduce x-axis tick labels for legibility (show every 4th date)
+    tick_interval = max(1, len(window_ends_sorted) // 8)  # Show ~8 labels
+    tick_indices = np.arange(0, len(window_ends_sorted), tick_interval)
+    ax.set_xticks(tick_indices)
+    ax.set_xticklabels(
+        [str(window_ends_sorted[i]) for i in tick_indices],
+        rotation=45,
+        ha="right",
+        fontsize=7
+    )
     ax.set_yticks(np.arange(len(nodes)))
-    ax.set_xticklabels([str(d) for d in window_ends_sorted], rotation=45, ha="right", fontsize=7)
     ax.set_yticklabels(nodes, fontsize=6)
 
     ax.set_xlabel("Window end date", color="#e2e8f0", fontsize=9)
@@ -76,6 +83,10 @@ def render_weighted_degree_heatmap(
 
     # Tick colors
     ax.tick_params(colors="#e2e8f0", labelsize=7)
+
+    # Dark spine colors for better blend
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#334155")
 
     plt.tight_layout()
 
@@ -91,7 +102,7 @@ def render_weighted_degree_heatmap(
 def render_centrality_trajectories(
     node_metrics: pl.DataFrame,
     centrality_metric: str = "eigenvector",
-    n_nodes: int = 10,
+    n_nodes: int | None = None,
     *,
     width: int = 12,
     height: int = 8,
@@ -103,21 +114,25 @@ def render_centrality_trajectories(
         node_metrics: Long-format DataFrame with columns
             (window_end, node, metric, value).
         centrality_metric: Which centrality to plot (default "eigenvector").
-        n_nodes: Number of top variable nodes to plot (limited to 10).
+        n_nodes: Number of top variable nodes to plot (default 10, limited to 20).
         width, height: Figure dimensions in inches.
         dpi: Dots per inch.
 
     Returns:
         PNG image bytes.
     """
+    # Default to 10 nodes if not specified
+    if n_nodes is None:
+        n_nodes = 10
+
     # Filter to centrality metric
     cent_df = node_metrics.filter(pl.col("metric") == centrality_metric)
 
     if cent_df.is_empty():
         return _empty_plot(f"No {centrality_metric} centrality data available")
 
-    # Find top variable nodes
-    top_k = min(n_nodes, 10)
+    # Find top variable nodes (limit to 20 max)
+    top_k = min(n_nodes, 20)
     top_nodes = (
         cent_df.group_by("node")
         .agg(pl.col("value").std().alias("std"))

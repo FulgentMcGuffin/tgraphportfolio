@@ -425,16 +425,13 @@ class MainWindow(QMainWindow):
         max_width = self.hist_label.width()
         max_height = self.hist_label.height()
         if max_width > 0 and max_height > 0:
-            scaled_pixmap = pixmap.scaledToHeight(
+            # Scale to fit within bounds while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(
+                max_width,
                 max_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            # If still too wide, scale to width instead
-            if scaled_pixmap.width() > max_width:
-                scaled_pixmap = pixmap.scaledToWidth(
-                    max_width,
-                    Qt.TransformationMode.SmoothTransformation
-                )
             pixmap = scaled_pixmap
         self.hist_label.setStyleSheet("background: transparent;")
         self.hist_label.setPixmap(pixmap)
@@ -793,15 +790,13 @@ class MainWindow(QMainWindow):
         max_width = self.evolution_degree_label.width()
         max_height = self.evolution_degree_label.height()
         if max_width > 0 and max_height > 0:
-            scaled_pixmap = pixmap.scaledToHeight(
+            # Scale to fit within bounds while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(
+                max_width,
                 max_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            if scaled_pixmap.width() > max_width:
-                scaled_pixmap = pixmap.scaledToWidth(
-                    max_width,
-                    Qt.TransformationMode.SmoothTransformation
-                )
             pixmap = scaled_pixmap
         self.evolution_degree_label.setStyleSheet("background: transparent;")
         self.evolution_degree_label.setPixmap(pixmap)
@@ -815,15 +810,13 @@ class MainWindow(QMainWindow):
         max_width = self.evolution_centrality_label.width()
         max_height = self.evolution_centrality_label.height()
         if max_width > 0 and max_height > 0:
-            scaled_pixmap = pixmap.scaledToHeight(
+            # Scale to fit within bounds while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(
+                max_width,
                 max_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            if scaled_pixmap.width() > max_width:
-                scaled_pixmap = pixmap.scaledToWidth(
-                    max_width,
-                    Qt.TransformationMode.SmoothTransformation
-                )
             pixmap = scaled_pixmap
         self.evolution_centrality_label.setStyleSheet("background: transparent;")
         self.evolution_centrality_label.setPixmap(pixmap)

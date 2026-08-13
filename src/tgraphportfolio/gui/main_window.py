@@ -269,6 +269,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("ResultTabs")
+        self.tabs.setMinimumHeight(300)  # Ensure tabs are always visible
 
         # --- Network tab ---
         network_page = QFrame()

@@ -137,12 +137,16 @@ def render_centrality_trajectories(
     fig.patch.set_facecolor("#0f172a")
     ax.set_facecolor("#0f172a")
 
-    # Color palette
+    # Color palette (slightly muted for less prominence)
     colors = [
         "#2a78d6", "#eb6834", "#1baf7a", "#eda100",
         "#e87ba4", "#008300", "#ff7f0e", "#2ca02c",
         "#d62728", "#9467bd"
     ]
+
+    # Line styles and markers for visual distinction
+    line_styles = ["-", "--", "-.", ":", "-", "--", "-.", ":", "-", "--"]
+    markers = ["o", "s", "^", "D", "v", "p", "*", "h", "+", "x"]
 
     # Sort by window_end for consistent plotting
     pandas_df = line_df.to_pandas().sort_values("window_end")
@@ -155,9 +159,11 @@ def render_centrality_trajectories(
             node_data["value"],
             label=node,
             color=colors[i % len(colors)],
-            linewidth=2,
-            marker="o",
-            markersize=4,
+            linewidth=1.2,  # Thinner lines for less prominence
+            linestyle=line_styles[i % len(line_styles)],  # Vary line style
+            marker=markers[i % len(markers)],  # Vary marker shape
+            markersize=3,  # Smaller markers
+            alpha=0.8,  # Slightly transparent
         )
 
     ax.set_xlabel("Window end date", color="#e2e8f0", fontsize=9)

@@ -421,10 +421,24 @@ class MainWindow(QMainWindow):
     def _show_histogram_png(self, png_bytes: bytes) -> None:
         pixmap = QPixmap()
         pixmap.loadFromData(png_bytes, "PNG")
+        # Scale pixmap to fit available space while maintaining aspect ratio
+        max_width = self.hist_label.width()
+        max_height = self.hist_label.height()
+        if max_width > 0 and max_height > 0:
+            scaled_pixmap = pixmap.scaledToHeight(
+                max_height,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            # If still too wide, scale to width instead
+            if scaled_pixmap.width() > max_width:
+                scaled_pixmap = pixmap.scaledToWidth(
+                    max_width,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            pixmap = scaled_pixmap
         self.hist_label.setStyleSheet("background: transparent;")
         self.hist_label.setPixmap(pixmap)
         self.hist_label.setText("")
-        self.hist_label.adjustSize()
 
     # ------------------------------------------------------------- logging
     def _append_log(self, message: str, *, replace_last: bool = False) -> None:
@@ -775,19 +789,45 @@ class MainWindow(QMainWindow):
         """Display evolution degree heatmap."""
         pixmap = QPixmap()
         pixmap.loadFromData(png_bytes, "PNG")
+        # Scale pixmap to fit available space while maintaining aspect ratio
+        max_width = self.evolution_degree_label.width()
+        max_height = self.evolution_degree_label.height()
+        if max_width > 0 and max_height > 0:
+            scaled_pixmap = pixmap.scaledToHeight(
+                max_height,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            if scaled_pixmap.width() > max_width:
+                scaled_pixmap = pixmap.scaledToWidth(
+                    max_width,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            pixmap = scaled_pixmap
         self.evolution_degree_label.setStyleSheet("background: transparent;")
         self.evolution_degree_label.setPixmap(pixmap)
         self.evolution_degree_label.setText("")
-        self.evolution_degree_label.adjustSize()
 
     def _show_evolution_centrality_png(self, png_bytes: bytes) -> None:
         """Display evolution centrality trajectories."""
         pixmap = QPixmap()
         pixmap.loadFromData(png_bytes, "PNG")
+        # Scale pixmap to fit available space while maintaining aspect ratio
+        max_width = self.evolution_centrality_label.width()
+        max_height = self.evolution_centrality_label.height()
+        if max_width > 0 and max_height > 0:
+            scaled_pixmap = pixmap.scaledToHeight(
+                max_height,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            if scaled_pixmap.width() > max_width:
+                scaled_pixmap = pixmap.scaledToWidth(
+                    max_width,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            pixmap = scaled_pixmap
         self.evolution_centrality_label.setStyleSheet("background: transparent;")
         self.evolution_centrality_label.setPixmap(pixmap)
         self.evolution_centrality_label.setText("")
-        self.evolution_centrality_label.adjustSize()
 
     def _show_evolution_settings(self) -> None:
         """Open evolution settings dialog."""

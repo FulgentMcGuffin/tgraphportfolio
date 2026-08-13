@@ -46,6 +46,8 @@ class PipelineWorker(QObject):
         # Will be populated during run
         self.df_returns: pl.DataFrame | None = None
         self.dates: list[date] | None = None
+        # Store original date column name for reference
+        self.date_column_original: str = config.date_column
 
     @Slot()
     def run(self) -> None:
@@ -101,8 +103,16 @@ class PipelineWorker(QObject):
                     [self._config.value_column],
                 )
 
+                # Normalize column names for evolution analysis
+                # Rename to standard internal names to avoid column name issues
+                df = df.rename({
+                    self._config.date_column: "Date",
+                    self._config.name_column: "Name",
+                    self._config.value_column: "Close",
+                })
+
                 self.df_returns = df
-                self.dates = [d for d in df.get_column(self._config.date_column).unique().sort()]
+                self.dates = [d for d in df.get_column("Date").unique().sort()]
             except Exception:
                 pass  # Evolution worker will handle missing data gracefully
 
@@ -138,10 +148,14 @@ class EvolutionWorker(QObject):
             self.status.emit("Computing evolution metrics...")
 
             # Compute metrics
+            # Use normalized column names (Date, Name, Close)
             node_metrics = compute_evolution_metrics(
                 self.df_returns,
                 self.dates,
                 self.evolution_config,
+                date_column="Date",
+                name_column="Name",
+                value_column="Close",
                 progress=self._progress_wrapper,
                 status=self.status.emit,
             )

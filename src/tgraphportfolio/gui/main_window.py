@@ -790,10 +790,16 @@ class MainWindow(QMainWindow):
 
     def _show_evolution_settings(self) -> None:
         """Open evolution settings dialog."""
+        # Get current threshold from GUI controls
+        current_threshold = float(self.spin_threshold.value())
+
+        # Update config with current threshold
+        self._evolution_config.independent_threshold = current_threshold
+
         dialog = EvolutionSettingsDialog(
             self,
             initial_config=self._evolution_config,
-            independent_threshold=float(self.spin_threshold.value()),
+            independent_threshold=current_threshold,
             max_nodes=self._current_n_nodes or 20,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -801,7 +807,8 @@ class MainWindow(QMainWindow):
             self._append_log(
                 f"Evolution config: window={self._evolution_config.window_size}, "
                 f"step={self._evolution_config.step}, "
-                f"centrality={self._evolution_config.centrality}"
+                f"centrality={self._evolution_config.centrality}, "
+                f"threshold={self._evolution_config.independent_threshold:.2f}"
             )
 
     def _launch_evolution_worker(self) -> None:
@@ -813,6 +820,9 @@ class MainWindow(QMainWindow):
 
         self._set_evolution_building()
         self._append_log("Starting evolution analysis...")
+
+        # Ensure config has current threshold from GUI
+        self._evolution_config.independent_threshold = float(self.spin_threshold.value())
 
         self._evolution_worker_thread = QThread(self)
         self._evolution_worker = EvolutionWorker(

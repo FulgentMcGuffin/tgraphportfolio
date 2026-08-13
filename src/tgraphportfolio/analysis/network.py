@@ -29,17 +29,21 @@ def build_corr_nx(
 
     Measure values near 1 mean strong dependence. Edges are stored as
     ``1 - measure`` so strongly related nodes sit closer in force layouts.
-    Weak edges (measure <= threshold) and self-loops are removed.
+    Weak edges (measure <= threshold), self-loops, and NaN edges are removed.
     """
     cor_matrix = measure_df.to_numpy().astype(float)
+
+    # Replace NaN values with 0 (no correlation) to avoid issues in rendering
+    cor_matrix = np.nan_to_num(cor_matrix, nan=0.0)
+
     sim_matrix = 1.0 - cor_matrix
     G = nx.from_numpy_array(sim_matrix)
     node_names = np.array(measure_df.columns)
     G = nx.relabel_nodes(G, lambda x: node_names[x])
     H = G.copy()
     for u, v, wt in G.edges.data("weight"):
-        if wt >= 1.0 - independent_threshold:
-            H.remove_edge(u, v)
-        elif u == v:
+        # Remove weak edges and self-loops
+        # NaN handling: wt should now be finite (converted above)
+        if not np.isfinite(wt) or wt >= 1.0 - independent_threshold or u == v:
             H.remove_edge(u, v)
     return H

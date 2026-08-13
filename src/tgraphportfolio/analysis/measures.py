@@ -52,7 +52,10 @@ def pearson_correlation_matrix(
     nodes: list[str],
     progress: ProgressCallback | None = None,
 ) -> pl.DataFrame:
-    """Compute a square Pearson correlation matrix for wide-format columns."""
+    """Compute a square Pearson correlation matrix for wide-format columns.
+
+    Handles NaN values and zero-variance columns gracefully.
+    """
     pearson_values = {node: {} for node in nodes}
     n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
     done = 0
@@ -68,7 +71,13 @@ def pearson_correlation_matrix(
             if len(vi_vj) < 3:
                 pearson_val = float("nan")
             else:
-                pearson_val = float(np.corrcoef(vi_vj[:, 0], vi_vj[:, 1])[0, 1])
+                # Check for zero variance (correlation undefined)
+                if np.std(vi_vj[:, 0]) == 0 or np.std(vi_vj[:, 1]) == 0:
+                    pearson_val = float("nan")
+                else:
+                    corr = np.corrcoef(vi_vj[:, 0], vi_vj[:, 1])[0, 1]
+                    # Ensure it's a scalar, not array, and handle NaN
+                    pearson_val = float(corr) if not np.isnan(corr) else float("nan")
             pearson_values[i][j] = pearson_val
             pearson_values[j][i] = pearson_val
             done += 1
@@ -85,7 +94,10 @@ def spearman_correlation_matrix(
     nodes: list[str],
     progress: ProgressCallback | None = None,
 ) -> pl.DataFrame:
-    """Compute a square Spearman correlation matrix for wide-format columns."""
+    """Compute a square Spearman correlation matrix for wide-format columns.
+
+    Handles NaN values and constant sequences gracefully.
+    """
     spearman_values = {node: {} for node in nodes}
     n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
     done = 0
@@ -101,9 +113,13 @@ def spearman_correlation_matrix(
             if len(vi_vj) < 3:
                 spearman_val = float("nan")
             else:
-                spearman_val = float(
-                    stats.spearmanr(vi_vj[:, 0], vi_vj[:, 1])[0]
-                )
+                try:
+                    corr, _ = stats.spearmanr(vi_vj[:, 0], vi_vj[:, 1])
+                    # Ensure it's a scalar and handle NaN
+                    spearman_val = float(corr) if not np.isnan(corr) else float("nan")
+                except (ValueError, RuntimeError):
+                    # Handle edge cases (constant sequences, all NaN, etc.)
+                    spearman_val = float("nan")
             spearman_values[i][j] = spearman_val
             spearman_values[j][i] = spearman_val
             done += 1

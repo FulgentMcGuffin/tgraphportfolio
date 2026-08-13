@@ -31,6 +31,13 @@ dependencies = [
     "tqdm>=4.67.0",
 ]
 
+# ace_cream compiles a Fortran extension (meson-python + gfortran) and is kept
+# optional so a missing toolchain never blocks `uv sync`/app startup -- without
+# it, the GUI detects the failed import and hides the "Maximal correlation
+# (ACE)" measure instead of failing to install. Enable with: uv sync --extra ace
+[project.optional-dependencies]
+ace = ["ace_cream"]
+
 [project.scripts]
 tgraph-gui = "tgraphportfolio.gui.app:main"
 
@@ -42,5 +49,6 @@ package = true
 prerelease = "allow"
 
 [tool.uv.sources]
+ace_cream = { git = "https://github.com/FulgentMcGuffin/ace_cream.git" }
 framecache = { git = "https://github.com/FulgentMcGuffin/framecache.git" }
 graspologic = { git = "https://github.com/FulgentMcGuffin/graspologic.git" }

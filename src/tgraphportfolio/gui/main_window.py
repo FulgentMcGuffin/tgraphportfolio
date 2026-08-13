@@ -46,7 +46,12 @@ from tgraphportfolio.analysis.data_access import (
 )
 from tgraphportfolio.analysis.evolution import EvolutionConfig
 from tgraphportfolio.analysis.gui_cache import GuiDataCache
-from tgraphportfolio.analysis.measures import available_measures, measure_short_label
+from tgraphportfolio.analysis.measures import (
+    ACE_AVAILABLE,
+    ACE_IMPORT_ERROR,
+    available_measures,
+    measure_short_label,
+)
 from tgraphportfolio.analysis.pipeline import PipelineResult
 from tgraphportfolio.analysis.transforms import available_transforms
 from tgraphportfolio.gui.evolution_settings_dialog import EvolutionSettingsDialog
@@ -113,6 +118,14 @@ class MainWindow(QMainWindow):
         self._set_controls_enabled(False)
         self.btn_browse.setEnabled(True)
         self._on_filter_toggled(False)
+
+        if not ACE_AVAILABLE:
+            self._append_log(
+                "Maximal correlation (ACE) unavailable: "
+                f"{ACE_IMPORT_ERROR or 'ace_cream not installed'}. "
+                "Install a Fortran compiler (gfortran) and run "
+                "`uv sync --extra ace` to enable it."
+            )
 
     # ------------------------------------------------------------------ UI
     def _build_sidebar(self) -> QWidget:

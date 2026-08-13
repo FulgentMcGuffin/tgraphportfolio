@@ -11,6 +11,14 @@ resolution-markers = [
 prerelease-mode = "allow"
 
 [[package]]
+name = "ace-cream"
+version = "0.5.0"
+source = { git = "https://github.com/FulgentMcGuffin/ace_cream.git#cf2720a5c4820205402a6a3940a2a3d6ee5a8200" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[[package]]
 name = "anytree"
 version = "2.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1281,8 +1289,14 @@ dependencies = [
     { name = "tqdm" },
 ]
 
+[package.optional-dependencies]
+ace = [
+    { name = "ace-cream" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "ace-cream", marker = "extra == 'ace'", git = "https://github.com/FulgentMcGuffin/ace_cream.git" },
     { name = "dcor", specifier = ">=0.7" },
     { name = "duckdb", specifier = ">=1.6.0.dev343" },
     { name = "framecache", git = "https://github.com/FulgentMcGuffin/framecache.git" },
@@ -1304,6 +1318,7 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "tqdm", specifier = ">=4.67.0" },
 ]
+provides-extras = ["ace"]
 
 [[package]]
 name = "threadpoolctl"

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateEdit,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -40,12 +41,14 @@ from tgraphportfolio.analysis.data_access import (
     list_columns,
     list_tables,
 )
+from tgraphportfolio.analysis.evolution import EvolutionConfig
 from tgraphportfolio.analysis.gui_cache import GuiDataCache
 from tgraphportfolio.analysis.measures import available_measures
 from tgraphportfolio.analysis.pipeline import PipelineResult
 from tgraphportfolio.analysis.transforms import available_transforms
+from tgraphportfolio.gui.evolution_settings_dialog import EvolutionSettingsDialog
 from tgraphportfolio.gui.styles import APP_STYLE, BG_SIDEBAR
-from tgraphportfolio.gui.workers import PipelineWorker
+from tgraphportfolio.gui.workers import EvolutionWorker, EvolutionResult, PipelineWorker
 
 
 def _force_dark_surface(widget: QWidget, color: str = BG_SIDEBAR) -> None:
@@ -75,6 +78,14 @@ class MainWindow(QMainWindow):
         self._busy = False
         # Session-scoped Polars memoization (in-memory SQLite via framecache).
         self._data_cache = GuiDataCache.create()
+
+        # Evolution analysis state
+        self._evolution_config = EvolutionConfig()
+        self._evolution_worker_thread: QThread | None = None
+        self._evolution_worker: EvolutionWorker | None = None
+        self._current_n_nodes: int | None = None
+        self._cached_df_returns = None
+        self._cached_dates = None
 
         root = QWidget()
         root.setObjectName("Root")
@@ -224,6 +235,13 @@ class MainWindow(QMainWindow):
         self.spin_threshold.setValue(0.33)
         form.addWidget(self.spin_threshold)
 
+        form.addSpacing(4)
+        self.btn_evolution_settings = QPushButton("⚙ Evolution Settings")
+        self.btn_evolution_settings.setObjectName("SecondaryButton")
+        self.btn_evolution_settings.clicked.connect(self._show_evolution_settings)
+        self.btn_evolution_settings.setToolTip("Configure network evolution analysis parameters")
+        form.addWidget(self.btn_evolution_settings)
+
         form.addSpacing(8)
         self.btn_run = QPushButton("Build network")
         self.btn_run.clicked.connect(self._run_pipeline)
@@ -284,6 +302,46 @@ class MainWindow(QMainWindow):
         hist_scroll.setWidget(self.hist_label)
         hist_layout.addWidget(hist_scroll)
         self.tabs.addTab(hist_page, "Degree histogram")
+
+        # --- Evolution: Weighted Degree tab ---
+        evolution_deg_page = QFrame()
+        evolution_deg_page.setObjectName("Canvas")
+        evolution_deg_layout = QVBoxLayout(evolution_deg_page)
+        evolution_deg_layout.setContentsMargins(8, 8, 8, 8)
+        self.evolution_degree_label = QLabel()
+        self.evolution_degree_label.setObjectName("HistLabel")
+        self.evolution_degree_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.evolution_degree_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.evolution_degree_label.setMinimumHeight(400)
+        self._set_evolution_deg_placeholder()
+        evolution_deg_scroll = QScrollArea()
+        evolution_deg_scroll.setWidgetResizable(True)
+        evolution_deg_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        evolution_deg_scroll.setWidget(self.evolution_degree_label)
+        evolution_deg_layout.addWidget(evolution_deg_scroll)
+        self.tabs.addTab(evolution_deg_page, "Evolution: Degrees")
+
+        # --- Evolution: Centrality tab ---
+        evolution_cent_page = QFrame()
+        evolution_cent_page.setObjectName("Canvas")
+        evolution_cent_layout = QVBoxLayout(evolution_cent_page)
+        evolution_cent_layout.setContentsMargins(8, 8, 8, 8)
+        self.evolution_centrality_label = QLabel()
+        self.evolution_centrality_label.setObjectName("HistLabel")
+        self.evolution_centrality_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.evolution_centrality_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.evolution_centrality_label.setMinimumHeight(400)
+        self._set_evolution_cent_placeholder()
+        evolution_cent_scroll = QScrollArea()
+        evolution_cent_scroll.setWidgetResizable(True)
+        evolution_cent_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        evolution_cent_scroll.setWidget(self.evolution_centrality_label)
+        evolution_cent_layout.addWidget(evolution_cent_scroll)
+        self.tabs.addTab(evolution_cent_page, "Evolution: Centrality")
 
         layout.addWidget(self.tabs, stretch=3)
 
@@ -521,6 +579,7 @@ class MainWindow(QMainWindow):
             self.date_start,
             self.date_end,
             self.spin_threshold,
+            self.btn_evolution_settings,
             self.btn_run,
         ):
             widget.setEnabled(enabled)
@@ -596,6 +655,7 @@ class MainWindow(QMainWindow):
         # Clear any previously rendered views before the new run.
         self.web.setHtml(self._building_html())
         self._set_hist_building()
+        self._set_evolution_building()
         self.tabs.setCurrentIndex(0)
 
         # Keep strong Python refs — a local worker is GC'd and the thread dies
@@ -658,17 +718,155 @@ class MainWindow(QMainWindow):
         self._temp_html = Path(tmp.name)
         self.web.load(QUrl.fromLocalFile(str(self._temp_html.resolve())))
         self._show_histogram_png(result.degree_hist_png)
+
+        # Store prepared data for evolution worker
+        if self._worker is not None:
+            self._cached_df_returns = self._worker.df_returns
+            self._cached_dates = self._worker.dates
+
         self._cleanup_worker()
-        self._set_busy(False)
+
+        # Launch evolution analysis
+        if self._cached_df_returns is not None and self._cached_dates is not None:
+            self._launch_evolution_worker()
+        else:
+            self._set_busy(False)
 
     def _on_failed(self, message: str) -> None:
         self.progress.setValue(0)
         self.lbl_status.setText("Failed.")
         self._append_log(f"ERROR: {message}")
         self._set_hist_placeholder("Build failed — histogram unavailable.")
+        self._set_evolution_deg_placeholder("Build failed — metrics unavailable.")
+        self._set_evolution_cent_placeholder("Build failed — metrics unavailable.")
         self._cleanup_worker()
         self._set_busy(False)
         QMessageBox.critical(self, "Pipeline failed", message)
+
+    # ============================================================================
+    # Evolution Analysis Methods
+    # ============================================================================
+
+    def _set_evolution_deg_placeholder(self, message: str | None = None) -> None:
+        """Set placeholder text for evolution degree tab."""
+        text = message or "Evolution metrics will appear here after you build a network."
+        self.evolution_degree_label.clear()
+        self.evolution_degree_label.setText(text)
+        self.evolution_degree_label.setStyleSheet(
+            "color: #94a3b8; font-size: 14px; background: transparent;"
+        )
+
+    def _set_evolution_cent_placeholder(self, message: str | None = None) -> None:
+        """Set placeholder text for evolution centrality tab."""
+        text = message or "Evolution metrics will appear here after you build a network."
+        self.evolution_centrality_label.clear()
+        self.evolution_centrality_label.setText(text)
+        self.evolution_centrality_label.setStyleSheet(
+            "color: #94a3b8; font-size: 14px; background: transparent;"
+        )
+
+    def _set_evolution_building(self) -> None:
+        """Set building state for evolution tabs."""
+        self._set_evolution_deg_placeholder("Computing evolution metrics...")
+        self._set_evolution_cent_placeholder("Computing evolution metrics...")
+
+    def _show_evolution_heatmap_png(self, png_bytes: bytes) -> None:
+        """Display evolution degree heatmap."""
+        pixmap = QPixmap()
+        pixmap.loadFromData(png_bytes, "PNG")
+        self.evolution_degree_label.setStyleSheet("background: transparent;")
+        self.evolution_degree_label.setPixmap(pixmap)
+        self.evolution_degree_label.setText("")
+        self.evolution_degree_label.adjustSize()
+
+    def _show_evolution_centrality_png(self, png_bytes: bytes) -> None:
+        """Display evolution centrality trajectories."""
+        pixmap = QPixmap()
+        pixmap.loadFromData(png_bytes, "PNG")
+        self.evolution_centrality_label.setStyleSheet("background: transparent;")
+        self.evolution_centrality_label.setPixmap(pixmap)
+        self.evolution_centrality_label.setText("")
+        self.evolution_centrality_label.adjustSize()
+
+    def _show_evolution_settings(self) -> None:
+        """Open evolution settings dialog."""
+        dialog = EvolutionSettingsDialog(
+            self,
+            initial_config=self._evolution_config,
+            independent_threshold=float(self.spin_threshold.value()),
+            max_nodes=self._current_n_nodes or 20,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._evolution_config = dialog.get_config()
+            self._append_log(
+                f"Evolution config: window={self._evolution_config.window_size}, "
+                f"step={self._evolution_config.step}, "
+                f"centrality={self._evolution_config.centrality}"
+            )
+
+    def _launch_evolution_worker(self) -> None:
+        """Launch evolution analysis in background."""
+        if self._cached_df_returns is None or self._cached_dates is None:
+            self._append_log("ERROR: No prepared data for evolution analysis")
+            self._set_busy(False)
+            return
+
+        self._set_evolution_building()
+        self._append_log("Starting evolution analysis...")
+
+        self._evolution_worker_thread = QThread(self)
+        self._evolution_worker = EvolutionWorker(
+            self._cached_df_returns,
+            self._cached_dates,
+            self._evolution_config,
+            data_cache=self._data_cache,
+        )
+        self._evolution_worker.moveToThread(self._evolution_worker_thread)
+        self._evolution_worker_thread.started.connect(self._evolution_worker.run)
+        self._evolution_worker.progress.connect(self._on_evolution_progress)
+        self._evolution_worker.status.connect(self._on_evolution_status)
+        self._evolution_worker.finished.connect(self._on_evolution_finished)
+        self._evolution_worker.failed.connect(self._on_evolution_failed)
+        self._evolution_worker.finished.connect(self._evolution_worker_thread.quit)
+        self._evolution_worker.failed.connect(self._evolution_worker_thread.quit)
+        self._evolution_worker_thread.start()
+
+    def _on_evolution_progress(self, done: int, total: int, desc: str) -> None:
+        """Handle evolution progress update."""
+        if total <= 0:
+            return
+        # Log periodically
+        if done % max(1, total // 10) == 0 or done in (0, total):
+            self._append_log(f"Evolution: {desc}")
+
+    def _on_evolution_status(self, message: str) -> None:
+        """Handle evolution status message."""
+        self.lbl_status.setText(message)
+        self._append_log(message)
+
+    def _on_evolution_finished(self, result: object) -> None:
+        """Handle evolution completion."""
+        if not isinstance(result, EvolutionResult):
+            self._on_evolution_failed(f"Unexpected evolution result type: {type(result)!r}")
+            return
+
+        self._append_log("Evolution metrics rendered.")
+        self._show_evolution_heatmap_png(result.heatmap_png)
+        self._show_evolution_centrality_png(result.centrality_png)
+        self.lbl_status.setText("Network and evolution analysis complete.")
+
+        self._evolution_worker = None
+        self._evolution_worker_thread = None
+        self._set_busy(False)
+
+    def _on_evolution_failed(self, message: str) -> None:
+        """Handle evolution failure."""
+        self._append_log(f"Evolution ERROR: {message}")
+        self._set_evolution_deg_placeholder(f"Failed: {message}")
+        self._set_evolution_cent_placeholder(f"Failed: {message}")
+        self._evolution_worker = None
+        self._evolution_worker_thread = None
+        self._set_busy(False)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._worker_thread is not None and self._worker_thread.isRunning():

@@ -46,7 +46,7 @@ In the GUI, point the sidebar at a DuckDB or SQLite database, choose columns / f
 |:---:|:---:|
 | ![Eigenvector centrality trajectories for HSI50 closing price returns](rsrc/images/hsi_centrality.png) | ![Node community membership heatmap for CAC40 closing price returns](rsrc/images/cac_community.png) |
 
-### Optional: Maximal Correlation of Alternating Con(ACE)
+### Optional: Alternating Conditional Expectations (ACE)
 
 The "Alternating Conditional Expectations (ACE)" measure depends on [`ace_cream`](https://github.com/FulgentMcGuffin/ace_cream), which compiles a Fortran extension and therefore requires a Fortran compiler (`gfortran`) plus a C compiler at install time. It is kept as an optional:
 

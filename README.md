@@ -34,16 +34,6 @@ uv run tgraph-gui
 
 In the GUI, point the sidebar at a DuckDB or SQLite database, choose columns / filters, then click **Build Network**.
 
-### Optional: Maximal Correlation (ACE)
-
-The "Maximal correlation (ACE)" connection measure depends on [`ace_cream`](https://github.com/FulgentMcGuffin/ace_cream), which compiles a Fortran extension and therefore requires a Fortran compiler (`gfortran`) plus a C compiler at install time. It's kept as an optional extra so its absence never blocks installing or launching the app:
-
-```bash
-uv sync --extra ace
-```
-
-If it isn't installed, or its compiled extension fails to import (e.g. `gfortran` wasn't available at build time), the GUI detects this automatically on startup and simply omits "Maximal correlation (ACE)" from the connection-measure dropdown, logging the reason to the process log.
-
 | Correlation network | Degree distribution |
 |:---:|:---:|
 | ![Distance correlation network for DAX closing price returns](rsrc/images/dax_dcor.png) | ![Degree distribution for CAC closing price returns](rsrc/images/cac_degrees.png) |
@@ -55,6 +45,17 @@ If it isn't installed, or its compiled extension fails to import (e.g. `gfortran
 | Centrality trajectories | Community membership evolution |
 |:---:|:---:|
 | ![Eigenvector centrality trajectories for HSI50 closing price returns](rsrc/images/hsi_centrality.png) | ![Node community membership heatmap for CAC40 closing price returns](rsrc/images/cac_community.png) |
+
+### Optional: Maximal Correlation of Alternating Con(ACE)
+
+The "Alternating Conditional Expectations (ACE)" measure depends on [`ace_cream`](https://github.com/FulgentMcGuffin/ace_cream), which compiles a Fortran extension and therefore requires a Fortran compiler (`gfortran`) plus a C compiler at install time. It is kept as an optional:
+
+```bash
+uv sync --extra ace
+```
+
+If not installed, or its compiled extension fails to import, the GUI omits "Maximal correlation (ACE)" from the connection-measure dropdown.
+
 
 ## References
 

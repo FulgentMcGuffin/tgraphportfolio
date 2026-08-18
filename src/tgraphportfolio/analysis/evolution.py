@@ -59,7 +59,8 @@ class EvolutionConfig:
         independent_threshold: Correlation threshold for network edges (default 0.33).
         centrality: Per-node centrality measure: "eigenvector", "betweenness", or "degree".
         n_top_nodes: Number of top variable nodes to show in centrality plot (default 10).
-        max_communities: Upper bound for per-window community count (only used for FIXED method).
+        max_communities: For FIXED method, exact k per window; for other methods,
+            upper bound when searching for optimal k per window.
         community_method: Strategy for determining optimal k per window; see CommunityMethod enum.
     """
 
@@ -72,6 +73,10 @@ class EvolutionConfig:
     n_top_nodes: int = 10
     max_communities: int = 10
     community_method: CommunityMethod = CommunityMethod.FIXED
+
+    def __post_init__(self) -> None:
+        if isinstance(self.community_method, str):
+            self.community_method = CommunityMethod(self.community_method)
 
 
 def generate_windows(
@@ -484,7 +489,7 @@ def compute_window_communities(
 
     Args:
         adjacency: Binary (n, n) adjacency matrix.
-        max_clusters: Upper bound for k search (only used if method != FIXED).
+        max_clusters: For FIXED method, exact k; for other methods, upper bound for k search.
         ase_n_components: Latent dimension for ASE (if None, uses sqrt(n)).
         random_state: Seed for reproducibility.
         method: Community detection optimization method (CommunityMethod enum).
@@ -550,7 +555,8 @@ def compute_community_metrics(
 
     Args:
         graphs: window_end -> nx.Graph, as returned in EvolutionMetricsResult.graphs.
-        max_clusters: Upper bound for per-window k search (unused if method=FIXED).
+        max_clusters: For FIXED method, exact k per window; for other methods,
+            upper bound when searching for optimal k per window.
         min_nodes: Minimum common-node count required.
         random_state: Seed for reproducibility.
         community_method: Strategy for selecting k per window (CommunityMethod enum).

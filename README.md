@@ -57,6 +57,137 @@ uv sync --extra ace
 If not installed, or its compiled extension fails to import, the GUI omits "Maximal correlation (ACE)" from the connection-measure dropdown.
 
 
+## Network Evolution Analysis
+
+### Overview
+
+Network evolution analysis extends static network snapshots into a **time series of networks**, revealing how relationship structures change across time. Rather than computing a single correlation network over an entire historical dataset, this module applies a sliding (or expanding) window to build hundreds of networks, each capturing the relationship structure within a specific time period. By tracking how network properties, node importance, and community structures evolve, analysts can detect:
+
+- **Regime changes**: Abrupt shifts in market correlation structure (detected via latent-position hypothesis testing)
+- **Gradual drifts**: Slow transitions in node centrality or community membership
+- **Structural phases**: Periods of high clustering or modularity versus periods of fragmentation
+- **Node trajectories**: How individual assets move through latent spaces defined by network position
+
+### Core Concepts
+
+#### Rolling and Expanding Windows
+
+**Rolling Window** (default):
+- Each window contains exactly `window_size` consecutive observations (e.g., 252 trading days ≈ 1 year)
+- Windows advance by `step` observations at a time (e.g., 21 days ≈ 1 month)
+- All windows have equal sample size, making metrics comparable across time
+- Older observations are fully forgotten once they fall out of the window (captures regime change sharply)
+
+**Expanding Window** (optional):
+- Window start is pinned to the first available date
+- Only the end advances, accumulating more data over time
+- Later windows are noisier but also smoother (full history still influences each window)
+- Useful for studying cumulative effects or learning curves
+
+#### Connection Measures
+
+Each window's network is constructed by computing a pairwise relationship measure (distance correlation, Pearson, Spearman, or ACE maximal correlation) on all node pairs within that window. Weak connections are pruned using an **edge threshold** (e.g., independent_threshold = 0.33 means keep edges with correlation ≥ 0.67 or distance-correlation ≥ 0.67).
+
+### Evolution Settings
+
+The **Evolution Analysis Settings** dialog controls the temporal analysis parameters:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| **Window size** | 252 obs | Number of consecutive observations per rolling window (e.g., trading days) |
+| **Step size** | 21 obs | How many observations to advance between consecutive windows |
+| **Min nodes/window** | 5 | Minimum number of unique nodes required per window (windows with fewer nodes are skipped) |
+| **Centrality measure** | eigenvector | Centrality metric to track over time: `eigenvector` (influence via connections), `betweenness` (bridging importance), or `degree` (raw connectivity) |
+| **Num nodes to plot** | 10 | Number of nodes to visualize in centrality and community plots; capped at ⌊total_nodes / 2⌋ |
+| **Community method** | fixed | Strategy for detecting communities per window (see Community Detection Methods below) |
+| **Max communities** | 10 | For `fixed` method: exact number of communities per window. For optimization methods: upper bound for search. |
+| **Edge threshold** | 0.33 (read-only) | Correlation/dissimilarity threshold used to prune edges; determined by connection measure selection |
+
+### Community Detection Methods
+
+Automatic community detection assigns nodes to clusters within each window using **Adjacency Spectral Embedding (ASE)** followed by **KMeans clustering**. Five strategies are available, each determining the number of communities (*k*) independently per window (guaranteeing **no lookahead bias**):
+
+#### 1. **FIXED** — Hard Upper Bound
+- Uses a fixed *k* for every window (specified by "Max communities")
+- Simplest, most reproducible, but doesn't adapt to data
+- Useful for enforcing business logic (e.g., "we always partition into 8 sectors")
+
+#### 2. **SILHOUETTE** — Latent-Space Cohesion
+- Maximizes average silhouette coefficient in the latent (ASE) embedding
+- Balances intra-cluster cohesion with inter-cluster separation
+- Default for `graspologic`'s auto-k selection; data-driven but latent-space-only
+
+#### 3. **MODULARITY** — Network-Aware
+- Maximizes modularity in the **original network** (not latent space)
+- Directly optimizes a classical graph-partitioning objective
+- Prefers assortative (community-structured) networks; less sensitive to embedding geometry
+
+#### 4. **DAVIES-BOULDIN** — Cluster Compactness
+- Minimizes Davies-Bouldin index in latent space
+- Penalizes overlapping or poorly-separated clusters
+- Favors tight, well-isolated communities
+
+#### 5. **CALINSKI-HARABASZ** — Variance Ratio
+- Maximizes Calinski-Harabasz index in latent space
+- Ratio of between-cluster to within-cluster variance
+- Sensitive to cluster scale and separation; tends to favor more balanced partitions
+
+**No Lookahead Bias**: Each window's community count depends only on that window's adjacency matrix and embedding, not on future windows. This ensures the analysis remains temporally valid for forecasting or real-time monitoring.
+
+### Visualization Outputs
+
+#### Weighted-Degree Heatmap
+- **Rows**: Nodes (stocks, assets, etc.)
+- **Columns**: Windows (time progression)
+- **Color intensity**: Sum of edge weights for each node in each window
+- **Interpretation**: Bright cells = nodes with many/strong connections at that time; dark cells = isolated nodes
+
+#### Centrality Trajectories (Dual-Plot View)
+- **Top plot**: Nodes with highest centrality variability (standard deviation across time)
+- **Bottom plot**: Nodes with lowest centrality variability
+- **Interpretation**: High-variability nodes are "movers" that shift importance; low-variability nodes are stable anchors
+- **Interactive**: Hover to see exact values; click a node name in the legend to highlight it across both plots
+
+#### Community Membership Heatmap
+- **Rows**: Nodes
+- **Columns**: Windows
+- **Color**: Community assignment per window (auto-color-coded)
+- **Interpretation**: Color changes indicate community membership drift; stable colors suggest structural persistence
+
+#### Extended Rolling Metrics
+- Faceted grid of 8 network-level metrics over time
+- Includes degree, density, clustering, transitivity, and connectivity
+- Reveals macro-level regime changes (e.g., crisis vs. normal periods)
+
+#### Latent Trajectories (Omnibus Embedding)
+- Top 6 most-moving nodes plotted in 2D latent space
+- Each node's path shows how its position in the network evolves
+- Arrows indicate temporal direction
+- Reveals whether nodes converge, diverge, or drift gradually
+
+### Typical Workflow
+
+1. **Load Data**: Point the GUI at a DuckDB or SQLite database with multivariate time-series panel data
+2. **Build Network**: Select date, node, and value columns; choose a connection measure
+3. **Open Evolution Settings**: Configure windowing (size, step), centrality measure, and community detection method
+4. **Run Analysis**: Click **Analyze Evolution** to compute all windows and generate visualizations
+5. **Explore Results**: 
+   - Check weighted-degree heatmap to spot nodes that became central/peripheral
+   - Review centrality trajectories (top/bottom plots) for behavioral shifts
+   - Examine community evolution to detect regime changes or clustering reorganizations
+   - Study extended metrics for network-level regime identification
+6. **Adjust and Re-run**: Tweak window size, step, or community method and re-analyze to validate findings
+
+### Performance Considerations
+
+- **Window count** scales inversely with step size (smaller step → more windows)
+- **Per-window cost** scales with O(n²) pairs and O(n log n) per-pair distance correlation
+- **Typical runtimes** (on modern hardware):
+  - 252-day window, 21-day step, 252 trading days of data: ~1–2 minutes (≈135 windows, ~440 pairs/sec)
+  - Weekly step: ~10–30 minutes (5× more windows)
+  - Expanding mode: similar window count as rolling, but later windows are slower (larger samples)
+- **Smoke test first**: Always run on a truncated date range (e.g., 1 year) before full-history analysis
+
 ## References
 
 ### Project Foundations & Libraries
@@ -74,7 +205,20 @@ If not installed, or its compiled extension fails to import, the GUI omits "Maxi
   - **Implementation**: [ace_cream (Python 3.13 Compatible Fork)](https://github.com/FulgentMcGuffin/ace_cream).
   - **Foundational Paper**: Breiman, L., & Friedman, J. H. (1985). *"Estimating Optimal Transformations for Multiple Regression and Correlation."* Journal of the American Statistical Association, 80(391), 580-598: [DOI (Taylor & Francis)](https://doi.org/10.1080/01621459.1985.10478157).
 
+### Community Detection & Clustering
+
+* **Silhouette Coefficient**: Average silhouette width for cluster cohesion and separation: [Wikipedia](https://en.wikipedia.org/wiki/Silhouette_(clustering)).
+* **Modularity Optimization**: Maximizing community structure in networks: [Wikipedia](https://en.wikipedia.org/wiki/Modularity_(networks)).
+  - **Reference**: Newman, M. E. (2006). *"Modularity and community structure in networks."* Proceedings of the National Academy of Sciences, 103(23), 8577-8582: [DOI (PNAS)](https://doi.org/10.1073/pnas.0601602103).
+* **Davies-Bouldin Index**: Average similarity ratio between each cluster and its most similar cluster: [Wikipedia](https://en.wikipedia.org/wiki/Davies%E2%80%93Bouldin_index).
+  - **Reference**: Davies, D. L., & Bouldin, D. W. (1979). *"A Cluster Separation Measure."* IEEE Transactions on Pattern Analysis and Machine Intelligence, 1(4), 224-227: [DOI (IEEE)](https://doi.org/10.1109/TPAMI.1979.4766909).
+* **Calinski-Harabasz Index**: Ratio of between-cluster to within-cluster variance: [Wikipedia](https://en.wikipedia.org/wiki/Calinski%E2%80%93Harabasz_index).
+  - **Reference**: Caliński, T., & Harabasz, J. (1974). *"A Dendrite Method for Cluster Analysis."* Communications in Statistics, 3(1), 1-27: [DOI (Taylor & Francis)](https://doi.org/10.1080/03610927408827101).
+* **Spectral Clustering & ASE**: Adjacency Spectral Embedding for latent-space node clustering: [graspologic Documentation](https://graspologic.readthedocs.io/).
+  - **Reference**: Levin, K., Roosta-Khorasani, F., Mahoney, M. W., & Priebe, C. E. (2018). *"Out-of-core spectral clustering via partwise stochastic optimization."* Machine Learning, 106(3), 333-368: [DOI (Springer)](https://doi.org/10.1007/s10994-017-5637-2).
+
 ### Multiple Hypothesis Testing
+
 * **Holm-Bonferroni Method**: Sequentially rejective procedure controlling family-wise error rates: [Wikipedia](https://en.wikipedia.org/wiki/Holm%E2%80%93Bonferroni_method).
 * **Foundational Paper**: Holm, S. (1979). *"A simple sequentially rejective multiple test procedure."* Scandinavian Journal of Statistics, 6(2), 65-70: [DOI (Wiley/JSTOR)](https://www.jstor.org/stable/4615733).
 

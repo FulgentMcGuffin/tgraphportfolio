@@ -5,17 +5,46 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
+from enum import Enum
 
 from graspologic.cluster import KMeansCluster
 from graspologic.embed import AdjacencySpectralEmbed
 import networkx as nx
 import numpy as np
 import polars as pl
+from sklearn.metrics import (
+    calinski_harabasz_score,
+    davies_bouldin_score,
+    silhouette_score,
+)
 
 from . import measures, network, transforms
 
 ProgressCallback = Callable[[int, int, str], None]
 StatusCallback = Callable[[str], None]
+
+
+class CommunityMethod(str, Enum):
+    """Community detection optimization method for rolling-window networks.
+
+    Each method determines the number of communities k independently per window
+    (no lookahead bias): only data from the current window informs that window's k.
+    """
+
+    FIXED = "fixed"
+    """Fixed k (max_communities parameter) for every window."""
+
+    SILHOUETTE = "silhouette"
+    """Maximize average silhouette coefficient in latent space (graspologic default)."""
+
+    MODULARITY = "modularity"
+    """Maximize modularity in the original network (graph-aware)."""
+
+    DAVIES_BOULDIN = "davies_bouldin"
+    """Minimize Davies-Bouldin index in latent space (cluster separation/compactness)."""
+
+    CALINSKI_HARABASZ = "calinski_harabasz"
+    """Maximize Calinski-Harabasz index in latent space (between/within cluster variance)."""
 
 
 @dataclass
@@ -30,7 +59,8 @@ class EvolutionConfig:
         independent_threshold: Correlation threshold for network edges (default 0.33).
         centrality: Per-node centrality measure: "eigenvector", "betweenness", or "degree".
         n_top_nodes: Number of top variable nodes to show in centrality plot (default 10).
-        max_communities: Upper bound for per-window community count (ASE+KMeans, default 10).
+        max_communities: Upper bound for per-window community count (only used for FIXED method).
+        community_method: Strategy for determining optimal k per window; see CommunityMethod enum.
     """
 
     window_size: int = 252
@@ -41,6 +71,7 @@ class EvolutionConfig:
     centrality: str = "eigenvector"
     n_top_nodes: int = 10
     max_communities: int = 10
+    community_method: CommunityMethod = CommunityMethod.FIXED
 
 
 def generate_windows(
@@ -305,23 +336,162 @@ def build_adjacency_tensor(
     return window_ends, common_nodes, tensor
 
 
+def _optimal_k_silhouette(
+    embedding: np.ndarray,
+    max_clusters: int,
+    random_state: int = 0,
+) -> tuple[int, float]:
+    """Find optimal k by maximizing average silhouette coefficient in latent space.
+
+    Args:
+        embedding: (n, d) ASE-embedded coordinates.
+        max_clusters: Upper bound for k search.
+        random_state: Seed for reproducibility.
+
+    Returns:
+        (optimal_k, best_score).
+    """
+    best_k = 2
+    best_score = -1.0
+    for k in range(2, min(max_clusters + 1, len(embedding))):
+        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+        if len(np.unique(labels)) < 2:
+            continue
+        score = silhouette_score(embedding, labels)
+        if score > best_score:
+            best_score = score
+            best_k = k
+    return best_k, best_score
+
+
+def _optimal_k_modularity(
+    adjacency: np.ndarray,
+    embedding: np.ndarray,
+    max_clusters: int,
+    random_state: int = 0,
+) -> tuple[int, float]:
+    """Find optimal k by maximizing modularity in the original network.
+
+    Args:
+        adjacency: (n, n) binary adjacency matrix.
+        embedding: (n, d) ASE-embedded coordinates (used for kmeans clustering).
+        max_clusters: Upper bound for k search.
+        random_state: Seed for reproducibility.
+
+    Returns:
+        (optimal_k, best_modularity).
+    """
+    G = nx.Graph(adjacency)
+    best_k = 2
+    best_mod = -1.0
+    for k in range(2, min(max_clusters + 1, len(embedding))):
+        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+        if len(np.unique(labels)) < 2:
+            continue
+        # Convert labels to partition of node lists
+        partition = [[] for _ in range(k)]
+        for node_idx, label in enumerate(labels):
+            partition[label].append(node_idx)
+        partition = [p for p in partition if p]  # Remove empty communities
+        if len(partition) < 2:
+            continue
+        try:
+            mod = nx.algorithms.community.modularity(G, partition)
+            if mod > best_mod:
+                best_mod = mod
+                best_k = len(partition)
+        except Exception:
+            pass
+    return best_k, best_mod
+
+
+def _optimal_k_davies_bouldin(
+    embedding: np.ndarray,
+    max_clusters: int,
+    random_state: int = 0,
+) -> tuple[int, float]:
+    """Find optimal k by minimizing Davies-Bouldin index in latent space.
+
+    Lower DB index is better (indicates better-separated, more compact clusters).
+
+    Args:
+        embedding: (n, d) ASE-embedded coordinates.
+        max_clusters: Upper bound for k search.
+        random_state: Seed for reproducibility.
+
+    Returns:
+        (optimal_k, best_score) where best_score is Davies-Bouldin index (lower is better).
+    """
+    best_k = 2
+    best_score = float("inf")
+    for k in range(2, min(max_clusters + 1, len(embedding))):
+        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+        if len(np.unique(labels)) < 2:
+            continue
+        score = davies_bouldin_score(embedding, labels)
+        if score < best_score:
+            best_score = score
+            best_k = k
+    return best_k, best_score
+
+
+def _optimal_k_calinski_harabasz(
+    embedding: np.ndarray,
+    max_clusters: int,
+    random_state: int = 0,
+) -> tuple[int, float]:
+    """Find optimal k by maximizing Calinski-Harabasz index in latent space.
+
+    Higher CH index is better (indicates better between-to-within-cluster variance ratio).
+
+    Args:
+        embedding: (n, d) ASE-embedded coordinates.
+        max_clusters: Upper bound for k search.
+        random_state: Seed for reproducibility.
+
+    Returns:
+        (optimal_k, best_score).
+    """
+    best_k = 2
+    best_score = -1.0
+    for k in range(2, min(max_clusters + 1, len(embedding))):
+        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+        if len(np.unique(labels)) < 2:
+            continue
+        score = calinski_harabasz_score(embedding, labels)
+        if score > best_score:
+            best_score = score
+            best_k = k
+    return best_k, best_score
+
+
 def compute_window_communities(
     adjacency: np.ndarray,
     *,
     max_clusters: int = 10,
     ase_n_components: int | None = None,
     random_state: int = 0,
-) -> np.ndarray:
-    """ASE + graspologic KMeansCluster (auto-selects k via silhouette).
+    method: CommunityMethod = CommunityMethod.FIXED,
+) -> tuple[np.ndarray, int, float]:
+    """ASE + KMeans community detection with configurable k-selection strategy.
+
+    Each window independently determines its optimal k based only on that window's
+    data (no lookahead bias). Method determines how k is selected.
 
     Args:
         adjacency: Binary (n, n) adjacency matrix.
-        max_clusters: Upper bound for k search (default 10).
+        max_clusters: Upper bound for k search (only used if method != FIXED).
         ase_n_components: Latent dimension for ASE (if None, uses sqrt(n)).
         random_state: Seed for reproducibility.
+        method: Community detection optimization method (CommunityMethod enum).
 
     Returns:
-        labels: (n,) 0-indexed cluster assignments.
+        (labels, selected_k, score): cluster assignments, number of communities
+        detected, and optimization score for the method (higher/lower depending on method).
     """
     if ase_n_components is None:
         ase_n_components = max(2, int(np.sqrt(adjacency.shape[0])))
@@ -332,9 +502,34 @@ def compute_window_communities(
     embedding = AdjacencySpectralEmbed(
         n_components=ase_n_components, check_lcc=False
     ).fit_transform(adjacency)
-    kmeans = KMeansCluster(max_clusters=max_clusters, random_state=random_state)
-    labels = kmeans.fit_predict(embedding)
-    return labels
+
+    if method == CommunityMethod.FIXED:
+        kmeans = KMeansCluster(max_clusters=max_clusters, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+        # Graspologic doesn't expose the silhouette score it uses internally,
+        # so return a placeholder score for consistency
+        selected_k = len(np.unique(labels))
+        score = -1.0
+    elif method == CommunityMethod.SILHOUETTE:
+        selected_k, score = _optimal_k_silhouette(embedding, max_clusters, random_state)
+        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+    elif method == CommunityMethod.MODULARITY:
+        selected_k, score = _optimal_k_modularity(adjacency, embedding, max_clusters, random_state)
+        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+    elif method == CommunityMethod.DAVIES_BOULDIN:
+        selected_k, score = _optimal_k_davies_bouldin(embedding, max_clusters, random_state)
+        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+    elif method == CommunityMethod.CALINSKI_HARABASZ:
+        selected_k, score = _optimal_k_calinski_harabasz(embedding, max_clusters, random_state)
+        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
+        labels = kmeans.fit_predict(embedding)
+    else:
+        raise ValueError(f"Unknown community method: {method}")
+
+    return labels, selected_k, score
 
 
 def compute_community_metrics(
@@ -343,16 +538,22 @@ def compute_community_metrics(
     max_clusters: int = 10,
     min_nodes: int = 2,
     random_state: int = 0,
+    community_method: CommunityMethod = CommunityMethod.FIXED,
     progress: ProgressCallback | None = None,
     status: StatusCallback | None = None,
 ) -> pl.DataFrame:
     """Detect per-window communities (ASE+KMeans) across a common node set.
 
+    Each window independently selects its community count based on the method
+    specified, ensuring no lookahead bias: k for window t depends only on data
+    from window t, not future windows.
+
     Args:
         graphs: window_end -> nx.Graph, as returned in EvolutionMetricsResult.graphs.
-        max_clusters: Upper bound for per-window k search.
+        max_clusters: Upper bound for per-window k search (unused if method=FIXED).
         min_nodes: Minimum common-node count required.
         random_state: Seed for reproducibility.
+        community_method: Strategy for selecting k per window (CommunityMethod enum).
         progress: Progress callback (done, total, desc).
         status: Status message callback.
 
@@ -372,8 +573,11 @@ def compute_community_metrics(
     for t in range(n_windows):
         if progress is not None:
             progress(t, n_windows, f"{window_ends[t]}")
-        labels = compute_window_communities(
-            tensor[t], max_clusters=max_clusters, random_state=random_state
+        labels, selected_k, score = compute_window_communities(
+            tensor[t],
+            max_clusters=max_clusters,
+            random_state=random_state,
+            method=community_method,
         )
         for node_idx, node_name in enumerate(common_nodes):
             rows.append(

@@ -196,6 +196,7 @@ class EvolutionWorker(QObject):
                     graphs,
                     max_clusters=self.evolution_config.max_communities,
                     min_nodes=self.evolution_config.min_nodes,
+                    community_method=self.evolution_config.community_method,
                     progress=self._progress_wrapper,
                     status=self.status.emit,
                 )

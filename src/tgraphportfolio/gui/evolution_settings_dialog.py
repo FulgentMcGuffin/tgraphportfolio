@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tgraphportfolio.analysis.evolution import EvolutionConfig
+from tgraphportfolio.analysis.evolution import CommunityMethod, EvolutionConfig
 from tgraphportfolio.gui.styles import APP_STYLE, BG_SIDEBAR
 
 
@@ -29,7 +29,7 @@ class EvolutionSettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Evolution Analysis Settings")
         self.setModal(True)
-        self.resize(400, 340)
+        self.resize(400, 380)
         self.setStyleSheet(APP_STYLE)
         self._force_dark_bg()
 
@@ -100,6 +100,13 @@ class EvolutionSettingsDialog(QDialog):
         self.spin_max_communities.setValue(self.initial_config.max_communities)
         form.addRow("Max communities:", self.spin_max_communities)
 
+        # Community detection method (optimization strategy for k selection per window)
+        self.cmb_community_method = QComboBox()
+        for method in CommunityMethod:
+            self.cmb_community_method.addItem(method.value, method)
+        self.cmb_community_method.setCurrentText(self.initial_config.community_method.value)
+        form.addRow("Community method:", self.cmb_community_method)
+
         # Independent threshold (read-only, informational)
         lbl_threshold = QLabel(f"{self.initial_config.independent_threshold:.2f}")
         form.addRow("Edge threshold:", lbl_threshold)
@@ -127,4 +134,5 @@ class EvolutionSettingsDialog(QDialog):
             centrality=self.cmb_centrality.currentText(),
             n_top_nodes=self.spin_n_nodes.value(),
             max_communities=self.spin_max_communities.value(),
+            community_method=self.cmb_community_method.currentData(),
         )

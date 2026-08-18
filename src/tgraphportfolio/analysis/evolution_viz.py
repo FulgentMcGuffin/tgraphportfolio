@@ -455,16 +455,19 @@ def render_centrality_trajectories(
     n_nodes: int | None = None,
     *,
     width: int = 12,
-    height: int = 8,
+    height: int = 10,
     dpi: int = 100,
 ) -> Figure:
-    """Render centrality trajectories (Plot c) as matplotlib Figure.
+    """Render centrality trajectories as two vertically stacked plots (matplotlib Figure).
+
+    Top plot: nodes with highest centrality variability (by std).
+    Bottom plot: nodes with lowest centrality variability (by std).
 
     Args:
         node_metrics: Long-format DataFrame with columns
             (window_end, node, metric, value).
         centrality_metric: Which centrality to plot (default "eigenvector").
-        n_nodes: Number of top variable nodes to plot (default 10, limited to 20).
+        n_nodes: Number of nodes per plot (default 10, capped at total_unique_nodes / 2).
         width, height: Figure dimensions in inches.
         dpi: Dots per inch.
 
@@ -481,27 +484,30 @@ def render_centrality_trajectories(
     if cent_df.is_empty():
         return _empty_plot(f"No {centrality_metric} centrality data available", width=width, height=height, dpi=dpi)
 
-    # Find top variable nodes (limit to 20 max)
-    top_k = min(n_nodes, 20)
-    top_nodes = (
+    # Get all unique nodes and cap n_nodes at total_nodes / 2
+    all_nodes = cent_df.get_column("node").unique().to_list()
+    max_n_nodes = max(1, len(all_nodes) // 2)
+    plot_n_nodes = min(n_nodes, max_n_nodes, 20)
+
+    # Find top and bottom variable nodes
+    node_stats = (
         cent_df.group_by("node")
         .agg(pl.col("value").std().alias("std"))
         .sort("std", descending=True)
-        .head(top_k)
-        .get_column("node")
-        .to_list()
     )
-
-    line_df = cent_df.filter(pl.col("node").is_in(top_nodes))
-
-    if line_df.is_empty():
-        return _empty_plot("No data for top nodes", width=width, height=height, dpi=dpi)
+    top_nodes = node_stats.head(plot_n_nodes).get_column("node").to_list()
+    bottom_nodes = node_stats.tail(plot_n_nodes).get_column("node").to_list()
 
     # Render
     fig = Figure(figsize=(width, height), dpi=dpi)
-    ax = fig.add_subplot(111)
     fig.patch.set_facecolor("#0f172a")
-    ax.set_facecolor("#0f172a")
+
+    # Create two subplots vertically stacked
+    ax_top = fig.add_subplot(211)
+    ax_bottom = fig.add_subplot(212)
+
+    for ax in [ax_top, ax_bottom]:
+        ax.set_facecolor("#0f172a")
 
     # Color palette (slightly muted for less prominence)
     colors = CATEGORICAL_10
@@ -511,59 +517,83 @@ def render_centrality_trajectories(
     markers = ["o", "s", "^", "D", "v", "p", "*", "h", "+", "x"]
 
     # Sort by window_end for consistent plotting
-    pandas_df = line_df.to_pandas().sort_values("window_end")
+    pandas_df = cent_df.to_pandas().sort_values("window_end")
 
-    # Plot lines and collect data for cursor / click-to-highlight
     import matplotlib.dates as mdates
-    line_data = {}
-    line_objects = {}
-    original_styles = {}
-    for i, node in enumerate(top_nodes):
-        node_data = pandas_df[pandas_df["node"] == node]
-        # Convert dates to numeric matplotlib dates for cursor distance calculation
-        x_numeric = mdates.date2num(node_data["window_end"].values)
-        y_vals = node_data["value"].values
-        line_data[node] = (x_numeric, y_vals)
 
-        node_linewidth = 1.2  # Thinner lines for less prominence
-        node_linestyle = line_styles[i % len(line_styles)]  # Vary line style
-        node_alpha = 0.8  # Slightly transparent
-        (line,) = ax.plot(
-            node_data["window_end"],
-            node_data["value"],
-            label=node,
-            color=colors[i % len(colors)],
-            linewidth=node_linewidth,
-            linestyle=node_linestyle,
-            marker=markers[i % len(markers)],  # Vary marker shape
-            markersize=3,  # Smaller markers
-            alpha=node_alpha,
-        )
-        line_objects[node] = line
-        original_styles[node] = {
-            "linewidth": node_linewidth,
-            "linestyle": node_linestyle,
-            "alpha": node_alpha,
-            "zorder": line.get_zorder(),
-        }
+    # Helper function to plot nodes on an axis
+    def plot_nodes_on_axis(ax, nodes_to_plot, plot_title):
+        line_data = {}
+        line_objects = {}
+        original_styles = {}
 
-    ax.set_xlabel("Window end date", color="#e2e8f0", fontsize=9)
-    ax.set_ylabel(f"{centrality_metric.title()} centrality", color="#e2e8f0", fontsize=9)
-    ax.set_title(f"Most variable nodes ({centrality_metric})", color="#e2e8f0", fontsize=12)
+        for i, node in enumerate(nodes_to_plot):
+            node_data = pandas_df[pandas_df["node"] == node]
+            if node_data.empty:
+                continue
 
-    ax.legend(loc="best", fontsize=7, facecolor="#0f172a", edgecolor="#e2e8f0",
-              labelcolor="#e2e8f0", framealpha=0.9)
-    ax.grid(True, alpha=0.2, color="#e2e8f0")
-    ax.tick_params(colors="#e2e8f0", labelsize=7)
+            # Convert dates to numeric matplotlib dates for cursor distance calculation
+            x_numeric = mdates.date2num(node_data["window_end"].values)
+            y_vals = node_data["value"].values
+            line_data[node] = (x_numeric, y_vals)
 
-    # Axis spines
-    for spine in ax.spines.values():
-        spine.set_edgecolor("#e2e8f0")
+            node_linewidth = 1.2  # Thinner lines for less prominence
+            node_linestyle = line_styles[i % len(line_styles)]  # Vary line style
+            node_alpha = 0.8  # Slightly transparent
+            (line,) = ax.plot(
+                node_data["window_end"],
+                node_data["value"],
+                label=node,
+                color=colors[i % len(colors)],
+                linewidth=node_linewidth,
+                linestyle=node_linestyle,
+                marker=markers[i % len(markers)],  # Vary marker shape
+                markersize=3,  # Smaller markers
+                alpha=node_alpha,
+            )
+            line_objects[node] = line
+            original_styles[node] = {
+                "linewidth": node_linewidth,
+                "linestyle": node_linestyle,
+                "alpha": node_alpha,
+                "zorder": line.get_zorder(),
+            }
+
+        ax.set_ylabel(f"{centrality_metric.title()} centrality", color="#e2e8f0", fontsize=9)
+        ax.set_title(plot_title, color="#e2e8f0", fontsize=11)
+
+        ax.legend(loc="best", fontsize=7, facecolor="#0f172a", edgecolor="#e2e8f0",
+                  labelcolor="#e2e8f0", framealpha=0.9)
+        ax.grid(True, alpha=0.2, color="#e2e8f0")
+        ax.tick_params(colors="#e2e8f0", labelsize=7)
+
+        # Axis spines
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#e2e8f0")
+
+        return line_data, line_objects, original_styles
+
+    # Plot top nodes
+    top_line_data, top_line_objects, top_original_styles = plot_nodes_on_axis(
+        ax_top, top_nodes, f"Highest variability nodes ({centrality_metric})"
+    )
+
+    # Plot bottom nodes
+    bottom_line_data, bottom_line_objects, bottom_original_styles = plot_nodes_on_axis(
+        ax_bottom, bottom_nodes, f"Lowest variability nodes ({centrality_metric})"
+    )
+
+    # Set xlabel only on bottom plot
+    ax_bottom.set_xlabel("Window end date", color="#e2e8f0", fontsize=9)
 
     fig.tight_layout()
 
     # Store data for cursor attachment later (after FigureCanvas is created)
-    fig._line_cursor_data = (ax, line_data, line_objects, original_styles)
+    # Format: {ax: (ax_obj, line_data, line_objects, original_styles)}
+    fig._line_cursor_data = {
+        ax_top: (ax_top, top_line_data, top_line_objects, top_original_styles),
+        ax_bottom: (ax_bottom, bottom_line_data, bottom_line_objects, bottom_original_styles),
+    }
 
     return fig
 

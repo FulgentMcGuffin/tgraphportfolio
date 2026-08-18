@@ -19,6 +19,22 @@ from tgraphportfolio.analysis.evolution import CommunityMethod, EvolutionConfig
 from tgraphportfolio.gui.styles import APP_STYLE, BG_SIDEBAR
 
 
+def _community_method_label(method: CommunityMethod | str) -> str:
+    """Return combo-box label for a community method (enum or plain string)."""
+    if isinstance(method, CommunityMethod):
+        return method.value
+    return method
+
+
+def _coerce_community_method(method: CommunityMethod | str | None) -> CommunityMethod:
+    """Normalize combo-box data back to CommunityMethod."""
+    if isinstance(method, CommunityMethod):
+        return method
+    if isinstance(method, str):
+        return CommunityMethod(method)
+    return CommunityMethod.FIXED
+
+
 class EvolutionSettingsDialog(QDialog):
     """Dialog for configuring temporal network evolution parameters."""
 
@@ -88,24 +104,31 @@ class EvolutionSettingsDialog(QDialog):
         self.cmb_centrality.setCurrentText(self.initial_config.centrality)
         form.addRow("Centrality measure:", self.cmb_centrality)
 
-        # Top N nodes (for centrality trajectories plot)
+        # Num nodes (for top/bottom centrality trajectories plots)
         self.spin_n_nodes = QSpinBox()
         self.spin_n_nodes.setRange(1, 20)
         self.spin_n_nodes.setValue(self.initial_config.n_top_nodes)
-        form.addRow("Top nodes to plot:", self.spin_n_nodes)
-
-        # Max communities (for per-window ASE+KMeans community detection)
-        self.spin_max_communities = QSpinBox()
-        self.spin_max_communities.setRange(2, 15)
-        self.spin_max_communities.setValue(self.initial_config.max_communities)
-        form.addRow("Max communities:", self.spin_max_communities)
+        form.addRow("Num nodes to plot:", self.spin_n_nodes)
 
         # Community detection method (optimization strategy for k selection per window)
         self.cmb_community_method = QComboBox()
         for method in CommunityMethod:
             self.cmb_community_method.addItem(method.value, method)
-        self.cmb_community_method.setCurrentText(self.initial_config.community_method.value)
+        self.cmb_community_method.setCurrentText(
+            _community_method_label(self.initial_config.community_method)
+        )
         form.addRow("Community method:", self.cmb_community_method)
+
+        # Communities control: exact k for FIXED, search upper bound for other methods
+        self._lbl_max_communities = QLabel()
+        self.spin_max_communities = QSpinBox()
+        self.spin_max_communities.setRange(2, 15)
+        self.spin_max_communities.setValue(self.initial_config.max_communities)
+        form.addRow(self._lbl_max_communities, self.spin_max_communities)
+        self.cmb_community_method.currentIndexChanged.connect(
+            self._update_community_spin_state
+        )
+        self._update_community_spin_state()
 
         # Independent threshold (read-only, informational)
         lbl_threshold = QLabel(f"{self.initial_config.independent_threshold:.2f}")
@@ -123,6 +146,24 @@ class EvolutionSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _update_community_spin_state(self) -> None:
+        """Reflect how max_communities is interpreted for the selected method."""
+        method = _coerce_community_method(
+            self.cmb_community_method.currentData()
+            or self.cmb_community_method.currentText()
+        )
+        if method == CommunityMethod.FIXED:
+            self._lbl_max_communities.setText("Communities per window:")
+            self.spin_max_communities.setToolTip(
+                "Fixed number of communities used in every rolling window."
+            )
+        else:
+            self._lbl_max_communities.setText("Max communities (search bound):")
+            self.spin_max_communities.setToolTip(
+                f"The {method.value} method chooses the optimal community count "
+                "independently for each window, searching from 2 up to this maximum."
+            )
+
     def get_config(self) -> EvolutionConfig:
         """Return configured EvolutionConfig."""
         return EvolutionConfig(
@@ -134,5 +175,8 @@ class EvolutionSettingsDialog(QDialog):
             centrality=self.cmb_centrality.currentText(),
             n_top_nodes=self.spin_n_nodes.value(),
             max_communities=self.spin_max_communities.value(),
-            community_method=self.cmb_community_method.currentData(),
+            community_method=_coerce_community_method(
+                self.cmb_community_method.currentData()
+                or self.cmb_community_method.currentText()
+            ),
         )

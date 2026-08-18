@@ -967,9 +967,20 @@ class MainWindow(QMainWindow):
             if hasattr(fig, "_line_cursor_data"):
                 try:
                     from tgraphportfolio.analysis.evolution_viz import _LineCursor
-                    ax, line_data, line_objects, original_styles = fig._line_cursor_data
-                    cursor = _LineCursor(ax, line_data, canvas, line_objects, original_styles)
-                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                    # _line_cursor_data is now a dict mapping ax -> (ax, line_data, line_objects, original_styles)
+                    cursor_data = fig._line_cursor_data
+                    if isinstance(cursor_data, dict):
+                        # Multiple axes (top/bottom plots)
+                        cursors = []
+                        for ax, (ax_obj, line_data, line_objects, original_styles) in cursor_data.items():
+                            cursor = _LineCursor(ax_obj, line_data, canvas, line_objects, original_styles)
+                            cursors.append(cursor)
+                        canvas._cursors = cursors  # Keep reference to prevent garbage collection
+                    else:
+                        # Legacy: single axis (shouldn't happen with new code, but handle gracefully)
+                        ax, line_data, line_objects, original_styles = cursor_data
+                        cursor = _LineCursor(ax, line_data, canvas, line_objects, original_styles)
+                        canvas._cursor = cursor
                 except Exception as e:
                     self._append_log(f"Cursor error (centrality): {str(e)}")
         except Exception as e:

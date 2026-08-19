@@ -80,11 +80,20 @@ def run_pipeline(
     progress: ProgressCallback | None = None,
     status: StatusCallback | None = None,
     data_cache: GuiDataCache | None = None,
+    edge_settings: dict | None = None,
 ) -> PipelineResult:
     """Run the full pipeline and return network HTML + degree histogram PNG.
 
     When ``data_cache`` is provided (GUI session), Polars frames for load /
     prepare / measure are memoized via framecache in an in-memory SQLite DB.
+
+    Args:
+        cfg: Pipeline configuration.
+        progress: Optional progress callback.
+        status: Optional status callback.
+        data_cache: Optional memoization cache.
+        edge_settings: Optional dict with measure-specific parameters
+            (e.g., {'conditional_quantile': 0.90}).
     """
 
     def _status(msg: str) -> None:
@@ -129,7 +138,7 @@ def run_pipeline(
         n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
         _status(f"Computing {cfg.measure} ({n_pairs:,} pairs)…")
         measure_df = compute_measure(
-            cfg.measure, wide.select(nodes), nodes, progress=progress
+            cfg.measure, wide.select(nodes), nodes, progress=progress, edge_settings=edge_settings
         )
 
     _status(

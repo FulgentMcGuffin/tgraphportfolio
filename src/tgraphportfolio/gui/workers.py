@@ -48,10 +48,12 @@ class PipelineWorker(QObject):
         self,
         config: PipelineConfig,
         data_cache: GuiDataCache | None = None,
+        edge_settings: dict | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._data_cache = data_cache
+        self._edge_settings = edge_settings or {}
         # Will be populated during run
         self.df_returns: pl.DataFrame | None = None
         self.dates: list[date] | None = None
@@ -68,6 +70,7 @@ class PipelineWorker(QObject):
                 ),
                 status=lambda msg: self.status.emit(msg),
                 data_cache=self._data_cache,
+                edge_settings=self._edge_settings,
             )
             # Store prepared data for evolution analysis
             # Get from cache if available

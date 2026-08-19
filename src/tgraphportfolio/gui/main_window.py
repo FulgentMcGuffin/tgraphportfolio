@@ -100,6 +100,10 @@ class MainWindow(QMainWindow):
         self._cached_dates = None
         self._current_measure_tag: str = "measure"
 
+        # Edge/connection measure settings
+        from tgraphportfolio.gui.edge_settings_dialog import EdgeSettingsConfig
+        self._edge_settings = EdgeSettingsConfig()
+
         root = QWidget()
         root.setObjectName("Root")
         self.setCentralWidget(root)
@@ -235,6 +239,12 @@ class MainWindow(QMainWindow):
         for measure_id, label in available_measures():
             self.cmb_measure.addItem(label, measure_id)
         form.addWidget(self.cmb_measure)
+
+        self.btn_edge_settings = QPushButton("⚙ Edge Settings")
+        self.btn_edge_settings.setObjectName("SecondaryButton")
+        self.btn_edge_settings.clicked.connect(self._show_edge_settings)
+        self.btn_edge_settings.setToolTip("Configure measure-specific parameters (e.g., stress regime quantile)")
+        form.addWidget(self.btn_edge_settings)
 
         form.addWidget(self._section("DATE RANGE"))
         dates = QHBoxLayout()
@@ -926,7 +936,11 @@ class MainWindow(QMainWindow):
         # Keep strong Python refs — a local worker is GC'd and the thread dies
         # before run() executes (see "QThread: Destroyed while thread is still running").
         self._worker_thread = QThread(self)
-        self._worker = PipelineWorker(config, data_cache=self._data_cache)
+        self._worker = PipelineWorker(
+            config,
+            data_cache=self._data_cache,
+            edge_settings=self._edge_settings.to_dict(),
+        )
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
@@ -1240,6 +1254,17 @@ class MainWindow(QMainWindow):
                 f"step={self._evolution_config.step}, "
                 f"centrality={self._evolution_config.centrality}, "
                 f"threshold={self._evolution_config.independent_threshold:.2f}"
+            )
+
+    def _show_edge_settings(self) -> None:
+        """Open edge/connection measure settings dialog."""
+        from tgraphportfolio.gui.edge_settings_dialog import EdgeSettingsDialog
+
+        dialog = EdgeSettingsDialog(self, initial_config=self._edge_settings)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._edge_settings = dialog.get_config()
+            self._append_log(
+                f"Edge settings: conditional_quantile={self._edge_settings.conditional_quantile:.2f}"
             )
 
     def _launch_evolution_worker(self) -> None:

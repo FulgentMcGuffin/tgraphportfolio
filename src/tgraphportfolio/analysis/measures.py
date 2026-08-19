@@ -533,8 +533,30 @@ def compute_measure(
     df_wide: pl.DataFrame,
     nodes: list[str],
     progress: ProgressCallback | None = None,
+    edge_settings: dict | None = None,
 ) -> pl.DataFrame:
+    """Compute connection measure with optional edge settings.
+
+    Args:
+        measure_id: ID of the measure (e.g., 'spearman_correlation').
+        df_wide: Wide-format DataFrame (rows=dates, cols=nodes).
+        nodes: List of node names.
+        progress: Optional progress callback.
+        edge_settings: Optional dict with measure-specific parameters:
+            - 'conditional_quantile': quantile threshold for conditional correlation (default 0.90)
+
+    Returns:
+        Square measure matrix as pl.DataFrame.
+    """
     fn = MEASURES.get(measure_id)
     if fn is None:
         raise ValueError(f"Unknown measure: {measure_id!r}")
-    return fn(df_wide, nodes, progress=progress)
+
+    edge_settings = edge_settings or {}
+
+    # Pass edge settings to measures that support them
+    if measure_id == "conditional_correlation":
+        quantile = edge_settings.get('conditional_quantile', 0.90)
+        return fn(df_wide, nodes, progress=progress, quantile=quantile)
+    else:
+        return fn(df_wide, nodes, progress=progress)

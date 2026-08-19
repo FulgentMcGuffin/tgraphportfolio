@@ -513,13 +513,18 @@ MEASURE_SHORT_LABELS: dict[str, str] = {
 # Excluded from available_measures() when that dependency isn't importable.
 _MEASURE_REQUIRES_ACE = {"maximal_correlation"}
 
+# Measures disabled in GUI due to performance (but available via API)
+# DTW is O(n²) per pair; prohibitively slow for large datasets
+_MEASURE_GUI_DISABLED = {"dtw_distance"}
+
 
 def available_measures() -> list[tuple[str, str]]:
-    """Measures selectable in the GUI: excludes ACE if ace_cream isn't usable."""
+    """Measures selectable in the GUI: excludes ACE if ace_cream isn't usable, DTW (performance)."""
     return [
         (key, MEASURE_LABELS.get(key, key))
         for key in MEASURES
-        if key not in _MEASURE_REQUIRES_ACE or ACE_AVAILABLE
+        if (key not in _MEASURE_REQUIRES_ACE or ACE_AVAILABLE)
+        and key not in _MEASURE_GUI_DISABLED
     ]
 
 

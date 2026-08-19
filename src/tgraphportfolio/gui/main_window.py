@@ -510,6 +510,7 @@ class MainWindow(QMainWindow):
         slider_container = QWidget()
         slider_layout = QHBoxLayout()
         slider_layout.setContentsMargins(4, 0, 4, 0)
+        slider_layout.setSpacing(6)
 
         # Label showing current threshold
         lbl_threshold = QLabel("Threshold:")
@@ -548,7 +549,7 @@ class MainWindow(QMainWindow):
         slider_layout.addWidget(lbl_value)
 
         slider_container.setLayout(slider_layout)
-        layout.addWidget(slider_container)
+        layout.addWidget(slider_container, 0)  # Add with stretch=0 to keep it compact
 
         # Store references and connect signal
         def on_slider_changed(value: int) -> None:
@@ -559,33 +560,43 @@ class MainWindow(QMainWindow):
                 # Rebuild network with new threshold
                 new_graph = build_corr_nx(measure_df, independent_threshold=threshold)
 
-                # Get the title from the current figure (approximately)
+                # Get the title from the current figure
                 hist_title_text = fig.axes[0].get_title() if fig.axes else "Degree Distribution"
 
                 # Render new histogram
                 new_fig = render_degree_histogram(new_graph, hist_title_text, threshold)
 
-                # Store data on figure for cursor
-                if hasattr(fig, "_histogram_cursor_data"):
-                    ax, degrees, bin_edges = fig._histogram_cursor_data
-                    new_fig._histogram_cursor_data = (new_fig.axes[0], dict(new_graph.degree()), new_fig.axes[0].patches[0].get_height() if new_fig.axes[0].patches else np.array([]))
+                # Extract bin_edges from the new figure's histogram patches
+                if new_fig.axes and new_fig.axes[0].patches:
+                    # Calculate bin edges from histogram patches
+                    patches = new_fig.axes[0].patches
+                    bin_edges = np.array([p.get_x() for p in patches] + [patches[-1].get_x() + patches[-1].get_width()])
+                else:
+                    # Fallback: create default bin edges
+                    degrees_dict = dict(new_graph.degree())
+                    bin_edges = np.linspace(0, max(degrees_dict.values()) + 1 if degrees_dict else 1, 16)
 
-                # Update canvas with new figure
-                canvas.figure.clear()
+                # Store data on figure for cursor
+                degrees_dict = dict(new_graph.degree())
+                new_fig._histogram_cursor_data = (new_fig.axes[0], degrees_dict, bin_edges)
+
+                # Update canvas: replace the old figure with the new one
+                old_fig = canvas.figure
                 canvas.figure = new_fig
                 canvas.draw()
 
-                # Re-attach cursor if needed
-                if hasattr(new_fig, "_histogram_cursor_data"):
-                    try:
-                        from tgraphportfolio.analysis.degree_hist import _HistogramCursor
-                        ax, degrees, bin_edges = new_fig._histogram_cursor_data
-                        if isinstance(bin_edges, dict):
-                            bin_edges = np.linspace(0, max(degrees.values()) + 1, 16)
-                        cursor = _HistogramCursor(new_fig.axes[0], degrees, bin_edges, canvas)
-                        canvas._cursor = cursor
-                    except Exception:
-                        pass
+                # Close the old figure to free memory
+                if old_fig:
+                    plt.close(old_fig)
+
+                # Re-attach cursor
+                try:
+                    from tgraphportfolio.analysis.degree_hist import _HistogramCursor
+                    ax, degrees, bin_edges = new_fig._histogram_cursor_data
+                    cursor = _HistogramCursor(ax, degrees, bin_edges, canvas)
+                    canvas._cursor = cursor
+                except Exception as e:
+                    self._append_log(f"Cursor error during update: {str(e)}")
 
             except Exception as e:
                 self._append_log(f"Error updating histogram: {str(e)}")
@@ -604,22 +615,16 @@ class MainWindow(QMainWindow):
                 if hasattr(widget, 'deleteLater'):
                     widget.deleteLater()
 
-            # Create container for canvas + slider
-            container = QWidget()
-            container_layout = QVBoxLayout()
-            container_layout.setContentsMargins(0, 0, 0, 0)
-            container_layout.setSpacing(8)
-
-            # Create and add canvas
+            # Create and add canvas directly (maintains original size)
             canvas = FigureCanvas(fig)
             canvas.setStyleSheet("background-color: transparent;")
-            container_layout.addWidget(canvas, 1)
+            self.hist_canvas_layout.addWidget(canvas)
             canvas.draw()
 
             # Add threshold slider if measure_df is available
             if hasattr(fig, "_measure_df_stored") and fig._measure_df_stored is not None:
                 self._create_threshold_slider(
-                    container_layout, fig, canvas, fig._measure_df_stored, fig._measure_name
+                    self.hist_canvas_layout, fig, canvas, fig._measure_df_stored, fig._measure_name
                 )
 
             # Attach cursor if data is available (store reference to prevent garbage collection)
@@ -631,9 +636,6 @@ class MainWindow(QMainWindow):
                     canvas._cursor = cursor  # Keep reference to prevent garbage collection
                 except Exception as e:
                     self._append_log(f"Cursor error (histogram): {str(e)}")
-
-            container.setLayout(container_layout)
-            self.hist_canvas_layout.addWidget(container)
         except Exception as e:
             self._append_log(f"Histogram display error: {str(e)}")
 

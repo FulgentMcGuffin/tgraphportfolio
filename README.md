@@ -14,6 +14,12 @@ The toolkit integrates several statistical and network analysis techniques:
    - **Pearson Correlation**: Evaluates standard linear correlation.
    - **Spearman Correlation**: Measures monotonic rank-based relationships.
    - **Maximal Correlation (ACE)**: Uses the Alternating Conditional Expectations algorithm to find nonparametric transformations that maximize correlation, capturing general (not necessarily monotonic) associations.
+   - **Kendall Tau**: Rank-based correlation robust to ties and small samples; detects monotonic associations.
+   - **DTW Distance**: Dynamic Time Warping similarity capturing phase-shifted but similar patterns; shape-based linkage.
+   - **Shrinkage Correlation (Ledoit-Wolf)**: Denoised Pearson correlation via Random Matrix Theory; stabilizes correlation estimates when samples ≈ assets.
+   - **Conditional Correlation**: Correlation computed only on high-magnitude return days; captures stress-regime linkage distinct from calm-period correlation.
+   - **Mutual Information**: Non-linear, non-monotonic dependence detector; entropy-based measure of shared information.
+   - **Chatterjee ξ**: Rank-based test for any dependence; computationally cheap alternative to distance correlation.
 3. **Graph Construction and Thresholding**: Prunes weak connections using a user-defined independence threshold to build unweighted or weighted `NetworkX` graphs.
 4. **Dynamic Network Visualization**: Renders interactive, physics-simulated network graphs utilizing `pyvis` to explore node connections dynamically.
 5. **Static Descriptive Metrics**: Computes and labels extreme nodes (minimum, maximum, and mode degrees) on degree-distribution histograms styled for dark-mode visualization.
@@ -201,9 +207,18 @@ Automatic community detection assigns nodes to clusters within each window using
 * **Distance Correlation**: Capturing linear and non-linear association: [Wikipedia](https://en.wikipedia.org/wiki/Distance_correlation).
 * **Pearson Correlation Coefficient**: Evaluating linear correlation: [Wikipedia](https://en.wikipedia.org/wiki/Pearson_correlation_coefficient).
 * **Spearman's Rank Correlation Coefficient**: Monotonic relationship strength: [Wikipedia](https://en.wikipedia.org/wiki/Spearman%27s_rank_correlation_coefficient).
+* **Kendall's Rank Correlation Coefficient (τ)**: Rank-based concordance measure robust to ties: [Wikipedia](https://en.wikipedia.org/wiki/Kendall_rank_correlation_coefficient).
 * **Alternating Conditional Expectations (ACE)**: Nonparametric maximal-correlation transformation, per the "Bivariate case": [Wikipedia](https://en.wikipedia.org/wiki/Alternating_conditional_expectations).
   - **Implementation**: [ace_cream (Python 3.13 Compatible Fork)](https://github.com/FulgentMcGuffin/ace_cream).
   - **Foundational Paper**: Breiman, L., & Friedman, J. H. (1985). *"Estimating Optimal Transformations for Multiple Regression and Correlation."* Journal of the American Statistical Association, 80(391), 580-598: [DOI (Taylor & Francis)](https://doi.org/10.1080/01621459.1985.10478157).
+* **Mutual Information**: Entropy-based measure of shared information between variables: [Wikipedia](https://en.wikipedia.org/wiki/Mutual_information).
+* **Chatterjee's ξ (Xi) Correlation**: Rank-based correlation coefficient detecting any monotone association: [arXiv](https://arxiv.org/abs/1909.10140).
+
+### Robust and Specialized Correlation Methods
+* **Shrinkage Correlation (Ledoit-Wolf)**: Denoised correlation via Random Matrix Theory for high-dimensional, short-window settings: [Wikipedia](https://en.wikipedia.org/wiki/Shrinkage_(statistics)).
+  - **Ledoit-Wolf Shrinkage**: Ledoit, O., & Wolf, M. (2004). *"Honey, I shrunk the sample covariance matrix."* Journal of Portfolio Management, 30(4), 110-119.
+* **Conditional / Exceedance Correlation**: Correlation measured only during stress regimes (extreme returns) vs. calm periods: captures tail co-movement and crisis linkage.
+* **Dynamic Time Warping (DTW)**: Shape-based similarity metric capturing phase-shifted but aligned patterns in time series: [Wikipedia](https://en.wikipedia.org/wiki/Dynamic_time_warping).
 
 ### Community Detection & Clustering
 

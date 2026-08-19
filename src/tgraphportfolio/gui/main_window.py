@@ -503,9 +503,15 @@ class MainWindow(QMainWindow):
         import polars as pl
 
         # Determine slider range based on measure type
-        if measure_name == "distance_correlation":
+        # Measures normalized to [0, 1]
+        normalized_measures = {
+            "distance_correlation", "kendall_tau", "dtw_distance",
+            "shrinkage_correlation", "conditional_correlation",
+            "mutual_information", "chatterjee_xi", "maximal_correlation"
+        }
+        if measure_name in normalized_measures:
             min_val, max_val = 0.0, 1.0
-        else:  # Pearson, Spearman, ACE
+        else:  # Pearson, Spearman (return [-1, 1])
             min_val, max_val = -1.0, 1.0
 
         # Create slider container

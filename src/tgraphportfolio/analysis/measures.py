@@ -8,6 +8,7 @@ import dcor
 import numpy as np
 import polars as pl
 from scipy import stats
+from sklearn.feature_selection import mutual_info_regression
 
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -209,11 +210,259 @@ def maximal_correlation_matrix(
     )
 
 
+def kendall_tau_matrix(
+    df_wide: pl.DataFrame,
+    nodes: list[str],
+    progress: ProgressCallback | None = None,
+) -> pl.DataFrame:
+    """Kendall's tau rank correlation matrix (normalized to [0,1] via abs)."""
+    tau_values = {node: {} for node in nodes}
+    n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
+    done = 0
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        for j in nodes[k:]:
+            if progress is not None:
+                progress(done, n_pairs, f"{i} / {j}")
+            v_j = df_wide.get_column(j).to_numpy()
+            valid = ~(np.isnan(v_i) | np.isnan(v_j))
+            if np.sum(valid) < 3:
+                tau_val = float("nan")
+            else:
+                tau_val, _ = stats.kendalltau(v_i[valid], v_j[valid])
+                tau_val = abs(tau_val)  # Normalize to [0, 1]
+            tau_values[i][j] = tau_val
+            tau_values[j][i] = tau_val
+            done += 1
+        k += 1
+    if progress is not None:
+        progress(n_pairs, n_pairs, "done")
+    return pl.DataFrame({row: [tau_values[row][col] for col in nodes] for row in nodes})
+
+
+def dtw_distance_matrix(
+    df_wide: pl.DataFrame,
+    nodes: list[str],
+    progress: ProgressCallback | None = None,
+) -> pl.DataFrame:
+    """Dynamic Time Warping distance normalized to [0,1] similarity."""
+    from scipy.spatial.distance import euclidean
+
+    def dtw_distance(x, y):
+        """Compute DTW distance between two sequences."""
+        n, m = len(x), len(y)
+        dtw_matrix = np.full((n + 1, m + 1), np.inf)
+        dtw_matrix[0, 0] = 0
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                cost = abs(x[i - 1] - y[j - 1])
+                dtw_matrix[i, j] = cost + min(dtw_matrix[i - 1, j], dtw_matrix[i, j - 1], dtw_matrix[i - 1, j - 1])
+        return dtw_matrix[n, m]
+
+    dtw_values = {node: {} for node in nodes}
+    n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
+    done = 0
+    k = 0
+    max_dtw = 1e-6
+    distances = []
+
+    # First pass: compute all distances to find max
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        v_i = v_i[~np.isnan(v_i)]
+        for j in nodes[k:]:
+            v_j = df_wide.get_column(j).to_numpy()
+            v_j = v_j[~np.isnan(v_j)]
+            if len(v_i) < 3 or len(v_j) < 3:
+                distances.append(float("nan"))
+            else:
+                dist = dtw_distance(v_i, v_j)
+                max_dtw = max(max_dtw, dist)
+                distances.append(dist)
+        k += 1
+
+    # Second pass: normalize and store
+    dist_idx = 0
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        for j in nodes[k:]:
+            if progress is not None:
+                progress(dist_idx, n_pairs, f"{i} / {j}")
+            dist = distances[dist_idx]
+            if np.isnan(dist):
+                similarity = float("nan")
+            else:
+                similarity = 1.0 - min(1.0, dist / max_dtw)  # Normalize to [0, 1]
+            dtw_values[i][j] = similarity
+            dtw_values[j][i] = similarity
+            dist_idx += 1
+        k += 1
+    if progress is not None:
+        progress(n_pairs, n_pairs, "done")
+    return pl.DataFrame({row: [dtw_values[row][col] for col in nodes] for row in nodes})
+
+
+def shrinkage_correlation_matrix(
+    df_wide: pl.DataFrame,
+    nodes: list[str],
+    progress: ProgressCallback | None = None,
+) -> pl.DataFrame:
+    """Ledoit-Wolf shrinkage correlation matrix (denoised Pearson)."""
+    from sklearn.covariance import LedoitWolf
+
+    data = df_wide.select(nodes).to_numpy()
+    data = data[~np.isnan(data).any(axis=1)]  # Remove rows with any NaN
+
+    if len(data) < 2:
+        return pl.DataFrame({node: [float("nan")] * len(nodes) for node in nodes})
+
+    # Compute Ledoit-Wolf shrunk covariance
+    lw = LedoitWolf()
+    lw.fit(data)
+    cov = lw.covariance_
+
+    # Convert covariance to correlation
+    d = np.sqrt(np.diag(cov))
+    corr = cov / np.outer(d, d)
+
+    if progress is not None:
+        progress(len(nodes), len(nodes), "done")
+
+    # Normalize to [0, 1]
+    corr = (corr + 1.0) / 2.0
+    return pl.DataFrame({nodes[i]: corr[i].tolist() for i in range(len(nodes))})
+
+
+def conditional_correlation_matrix(
+    df_wide: pl.DataFrame,
+    nodes: list[str],
+    progress: ProgressCallback | None = None,
+    quantile: float = 0.90,
+) -> pl.DataFrame:
+    """Correlation computed only on days where abs(returns) > quantile threshold (stress regime)."""
+    corr_values = {node: {} for node in nodes}
+    n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
+    done = 0
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        v_i_clean = v_i[~np.isnan(v_i)]
+        threshold_i = np.quantile(np.abs(v_i_clean), quantile)
+        for j in nodes[k:]:
+            if progress is not None:
+                progress(done, n_pairs, f"{i} / {j}")
+            v_j = df_wide.get_column(j).to_numpy()
+            v_j_clean = v_j[~np.isnan(v_j)]
+            threshold_j = np.quantile(np.abs(v_j_clean), quantile)
+
+            # Keep only rows where both exceed threshold
+            valid = (~np.isnan(v_i) & ~np.isnan(v_j) &
+                    (np.abs(v_i) > threshold_i) & (np.abs(v_j) > threshold_j))
+
+            if np.sum(valid) < 3:
+                corr_val = float("nan")
+            else:
+                corr_val = np.corrcoef(v_i[valid], v_j[valid])[0, 1]
+                corr_val = (corr_val + 1.0) / 2.0  # Normalize to [0, 1]
+
+            corr_values[i][j] = corr_val
+            corr_values[j][i] = corr_val
+            done += 1
+        k += 1
+    if progress is not None:
+        progress(n_pairs, n_pairs, "done")
+    return pl.DataFrame({row: [corr_values[row][col] for col in nodes] for row in nodes})
+
+
+def mutual_information_matrix(
+    df_wide: pl.DataFrame,
+    nodes: list[str],
+    progress: ProgressCallback | None = None,
+) -> pl.DataFrame:
+    """Mutual information using k-NN estimation, normalized to [0,1]."""
+    from sklearn.feature_selection import mutual_info_regression
+
+    mi_values = {node: {} for node in nodes}
+    n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
+    done = 0
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        for j in nodes[k:]:
+            if progress is not None:
+                progress(done, n_pairs, f"{i} / {j}")
+            v_j = df_wide.get_column(j).to_numpy()
+            valid = ~(np.isnan(v_i) | np.isnan(v_j))
+            if np.sum(valid) < 3:
+                mi_val = float("nan")
+            else:
+                mi_val = mutual_info_regression(v_i[valid].reshape(-1, 1), v_j[valid], random_state=0)[0]
+                # Normalize MI by max entropy (use min H(X), H(Y) as reference)
+                h_i = -np.sum(np.histogram_bin_edges(v_i[valid])[:-1] * np.diff(np.histogram(v_i[valid])[0])) / len(v_i[valid])
+                mi_val = min(1.0, mi_val / max(abs(h_i), 1e-6))  # Cap at 1.0
+
+            mi_values[i][j] = mi_val
+            mi_values[j][i] = mi_val
+            done += 1
+        k += 1
+    if progress is not None:
+        progress(n_pairs, n_pairs, "done")
+    return pl.DataFrame({row: [mi_values[row][col] for col in nodes] for row in nodes})
+
+
+def chatterjee_xi_matrix(
+    df_wide: pl.DataFrame,
+    nodes: list[str],
+    progress: ProgressCallback | None = None,
+) -> pl.DataFrame:
+    """Chatterjee's xi correlation (rank-based, detects any dependence)."""
+    from scipy.stats import rankdata
+
+    xi_values = {node: {} for node in nodes}
+    n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
+    done = 0
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        for j in nodes[k:]:
+            if progress is not None:
+                progress(done, n_pairs, f"{i} / {j}")
+            v_j = df_wide.get_column(j).to_numpy()
+            valid = ~(np.isnan(v_i) | np.isnan(v_j))
+            if np.sum(valid) < 3:
+                xi_val = float("nan")
+            else:
+                x = v_i[valid]
+                y = v_j[valid]
+                ranks_y = rankdata(y)
+                n = len(x)
+                # Compute xi as 1 - (sum of squared rank differences) / (max possible)
+                sorted_idx = np.argsort(x)
+                d = np.sum(np.abs(np.diff(ranks_y[sorted_idx])))
+                xi_val = abs(1.0 - (3 * d) / (n * n - 1))  # Normalize to [0, 1] via abs
+
+            xi_values[i][j] = xi_val
+            xi_values[j][i] = xi_val
+            done += 1
+        k += 1
+    if progress is not None:
+        progress(n_pairs, n_pairs, "done")
+    return pl.DataFrame({row: [xi_values[row][col] for col in nodes] for row in nodes})
+
+
 MEASURES: dict[str, Callable[..., pl.DataFrame]] = {
     "distance_correlation": distance_correlation_matrix,
     "pearson_correlation": pearson_correlation_matrix,
     "spearman_correlation": spearman_correlation_matrix,
     "maximal_correlation": maximal_correlation_matrix,
+    "kendall_tau": kendall_tau_matrix,
+    "dtw_distance": dtw_distance_matrix,
+    "shrinkage_correlation": shrinkage_correlation_matrix,
+    "conditional_correlation": conditional_correlation_matrix,
+    "mutual_information": mutual_information_matrix,
+    "chatterjee_xi": chatterjee_xi_matrix,
 }
 
 MEASURE_LABELS: dict[str, str] = {
@@ -221,6 +470,12 @@ MEASURE_LABELS: dict[str, str] = {
     "pearson_correlation": "Pearson correlation",
     "spearman_correlation": "Spearman correlation",
     "maximal_correlation": "Maximal correlation (ACE)",
+    "kendall_tau": "Kendall Tau",
+    "dtw_distance": "DTW distance",
+    "shrinkage_correlation": "Shrinkage correlation (Ledoit-Wolf)",
+    "conditional_correlation": "Conditional correlation (stress regime)",
+    "mutual_information": "Mutual information",
+    "chatterjee_xi": "Chatterjee ξ correlation",
 }
 
 # Short tag for progress-bar/log display (e.g. "dcor 100% (780/780)").
@@ -229,6 +484,12 @@ MEASURE_SHORT_LABELS: dict[str, str] = {
     "pearson_correlation": "pearson",
     "spearman_correlation": "spearman",
     "maximal_correlation": "ace",
+    "kendall_tau": "kendall",
+    "dtw_distance": "dtw",
+    "shrinkage_correlation": "shrinkage",
+    "conditional_correlation": "conditional",
+    "mutual_information": "mi",
+    "chatterjee_xi": "xi",
 }
 
 # Measures gated behind a runtime-checked, optionally-compiled dependency.

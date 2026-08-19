@@ -214,12 +214,14 @@ QPushButton:disabled {{
 }}
 QPushButton#SecondaryButton {{
     background-color: {BG_CONTROL};
+    color: {TEXT_MUTED};
     border: 1px solid {BORDER};
     border-radius: 8px;
     padding: 5px 10px;
 }}
 QPushButton#SecondaryButton:hover {{
     background-color: {BG_CONTROL_HOVER};
+    color: {TEXT};
     border-color: #bae6fd;
 }}
 

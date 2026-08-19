@@ -388,25 +388,42 @@ def mutual_information_matrix(
     n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
     done = 0
     k = 0
+    mi_max = 1e-6  # Running max for normalization
+    mi_list = []  # Collect all MI values first
+
+    # First pass: compute all MI values
     for i in nodes:
         v_i = df_wide.get_column(i).to_numpy()
         for j in nodes[k:]:
-            if progress is not None:
-                progress(done, n_pairs, f"{i} / {j}")
             v_j = df_wide.get_column(j).to_numpy()
             valid = ~(np.isnan(v_i) | np.isnan(v_j))
             if np.sum(valid) < 3:
                 mi_val = float("nan")
             else:
                 mi_val = mutual_info_regression(v_i[valid].reshape(-1, 1), v_j[valid], random_state=0)[0]
-                # Normalize MI by max entropy (use min H(X), H(Y) as reference)
-                h_i = -np.sum(np.histogram_bin_edges(v_i[valid])[:-1] * np.diff(np.histogram(v_i[valid])[0])) / len(v_i[valid])
-                mi_val = min(1.0, mi_val / max(abs(h_i), 1e-6))  # Cap at 1.0
+                mi_max = max(mi_max, float(mi_val))
+                mi_list.append(mi_val)
+        k += 1
 
+    # Second pass: normalize and store
+    mi_idx = 0
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        for j in nodes[k:]:
+            if progress is not None:
+                progress(mi_idx, len(mi_list), f"{i} / {j}")
+            v_j = df_wide.get_column(j).to_numpy()
+            valid = ~(np.isnan(v_i) | np.isnan(v_j))
+            if np.sum(valid) < 3:
+                mi_val = float("nan")
+            else:
+                mi_val = min(1.0, mi_list[mi_idx] / mi_max)  # Normalize to [0, 1]
             mi_values[i][j] = mi_val
             mi_values[j][i] = mi_val
-            done += 1
+            mi_idx += 1
         k += 1
+
     if progress is not None:
         progress(n_pairs, n_pairs, "done")
     return pl.DataFrame({row: [mi_values[row][col] for col in nodes] for row in nodes})

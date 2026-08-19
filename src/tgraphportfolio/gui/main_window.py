@@ -626,6 +626,13 @@ class MainWindow(QMainWindow):
                 for text in legend.get_texts():
                     text.set_color("#cbd5e1")
 
+                # Re-add node label annotations for min/max/mode degrees
+                try:
+                    from tgraphportfolio.analysis.degree_hist import _annotate_extreme_nodes
+                    _annotate_extreme_nodes(ax, degrees_dict, lo, hi, bin_edges)
+                except Exception as e:
+                    self._append_log(f"Warning: Could not annotate extreme nodes: {str(e)}")
+
                 # Update cursor data
                 fig._histogram_cursor_data = (ax, degrees_dict, bin_edges)
 

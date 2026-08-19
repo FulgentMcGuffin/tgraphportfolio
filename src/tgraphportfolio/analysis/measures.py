@@ -304,6 +304,94 @@ def dtw_distance_matrix(
     return pl.DataFrame({row: [dtw_values[row][col] for col in nodes] for row in nodes})
 
 
+def fastdtw_distance_matrix(
+    df_wide: pl.DataFrame,
+    nodes: list[str],
+    progress: ProgressCallback | None = None,
+    radius: int = 2,
+) -> pl.DataFrame:
+    """FastDTW: Approximate DTW using Sakoe-Chiba band (O(n·radius) vs O(n²)).
+
+    Uses a windowed constraint to reduce computational cost. More accurate
+    than raw DTW but much faster. Good for large datasets.
+
+    Args:
+        df_wide: Wide-format DataFrame.
+        nodes: List of node names.
+        progress: Optional progress callback.
+        radius: Sakoe-Chiba band radius (window width). Smaller = faster.
+                Default 2; try 1-5. radius=1 is very restrictive.
+
+    Returns:
+        Normalized distance matrix [0, 1] where larger = more similar.
+    """
+
+    def fastdtw_distance(x, y, radius=2):
+        """FastDTW with Sakoe-Chiba band constraint."""
+        n, m = len(x), len(y)
+        dtw_matrix = np.full((n + 1, m + 1), np.inf)
+        dtw_matrix[0, 0] = 0
+
+        for i in range(1, n + 1):
+            # Window constraint: from max(1, i - radius) to min(m, i + radius)
+            j_min = max(1, i - radius)
+            j_max = min(m + 1, i + radius + 1)
+
+            for j in range(j_min, j_max):
+                cost = abs(x[i - 1] - y[j - 1])
+                dtw_matrix[i, j] = cost + min(
+                    dtw_matrix[i - 1, j],
+                    dtw_matrix[i, j - 1],
+                    dtw_matrix[i - 1, j - 1],
+                )
+
+        return dtw_matrix[n, m]
+
+    dtw_values = {node: {} for node in nodes}
+    n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
+    max_dtw = 1e-6
+    distances = []
+
+    # First pass: compute all distances
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        v_i = v_i[~np.isnan(v_i)]
+        for j in nodes[k:]:
+            v_j = df_wide.get_column(j).to_numpy()
+            v_j = v_j[~np.isnan(v_j)]
+
+            if len(v_i) < 3 or len(v_j) < 3:
+                distances.append(float("nan"))
+            else:
+                dist = fastdtw_distance(v_i, v_j, radius=radius)
+                max_dtw = max(max_dtw, dist)
+                distances.append(dist)
+        k += 1
+
+    # Second pass: normalize and store
+    dist_idx = 0
+    k = 0
+    for i in nodes:
+        v_i = df_wide.get_column(i).to_numpy()
+        for j in nodes[k:]:
+            if progress is not None:
+                progress(dist_idx, n_pairs, f"{i} / {j}")
+            dist = distances[dist_idx]
+            if np.isnan(dist):
+                similarity = float("nan")
+            else:
+                similarity = 1.0 - min(1.0, dist / max_dtw)  # Normalize to [0, 1]
+            dtw_values[i][j] = similarity
+            dtw_values[j][i] = similarity
+            dist_idx += 1
+        k += 1
+
+    if progress is not None:
+        progress(n_pairs, n_pairs, "done")
+    return pl.DataFrame({row: [dtw_values[row][col] for col in nodes] for row in nodes})
+
+
 def shrinkage_correlation_matrix(
     df_wide: pl.DataFrame,
     nodes: list[str],
@@ -476,6 +564,7 @@ MEASURES: dict[str, Callable[..., pl.DataFrame]] = {
     "maximal_correlation": maximal_correlation_matrix,
     "kendall_tau": kendall_tau_matrix,
     "dtw_distance": dtw_distance_matrix,
+    "fastdtw_distance": fastdtw_distance_matrix,
     "shrinkage_correlation": shrinkage_correlation_matrix,
     "conditional_correlation": conditional_correlation_matrix,
     "mutual_information": mutual_information_matrix,
@@ -489,6 +578,7 @@ MEASURE_LABELS: dict[str, str] = {
     "maximal_correlation": "Maximal correlation (ACE)",
     "kendall_tau": "Kendall Tau",
     "dtw_distance": "DTW distance",
+    "fastdtw_distance": "FastDTW distance (approximate, faster)",
     "shrinkage_correlation": "Shrinkage correlation (Ledoit-Wolf)",
     "conditional_correlation": "Conditional correlation (stress regime)",
     "mutual_information": "Mutual information",
@@ -503,6 +593,7 @@ MEASURE_SHORT_LABELS: dict[str, str] = {
     "maximal_correlation": "ace",
     "kendall_tau": "kendall",
     "dtw_distance": "dtw",
+    "fastdtw_distance": "fastdtw",
     "shrinkage_correlation": "shrinkage",
     "conditional_correlation": "conditional",
     "mutual_information": "mi",
@@ -515,7 +606,8 @@ _MEASURE_REQUIRES_ACE = {"maximal_correlation"}
 
 # Measures disabled in GUI due to performance (but available via API)
 # DTW is O(n²) per pair; prohibitively slow for large datasets
-_MEASURE_GUI_DISABLED = {"dtw_distance"}
+# FastDTW is available via API only; for programmatic use where speed/accuracy tradeoff is explicit
+_MEASURE_GUI_DISABLED = {"dtw_distance", "fastdtw_distance"}
 
 
 def available_measures() -> list[tuple[str, str]]:
@@ -563,5 +655,8 @@ def compute_measure(
     if measure_id == "conditional_correlation":
         quantile = edge_settings.get('conditional_quantile', 0.90)
         return fn(df_wide, nodes, progress=progress, quantile=quantile)
+    elif measure_id == "fastdtw_distance":
+        radius = edge_settings.get('fastdtw_radius', 2)
+        return fn(df_wide, nodes, progress=progress, radius=radius)
     else:
         return fn(df_wide, nodes, progress=progress)

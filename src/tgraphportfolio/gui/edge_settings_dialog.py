@@ -26,6 +26,9 @@ class EdgeSettingsConfig:
     # Conditional correlation settings
     conditional_quantile: float = 0.90
 
+    # FastDTW settings
+    fastdtw_radius: int = 2
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return asdict(self)
@@ -118,6 +121,26 @@ class EdgeSettingsDialog(QDialog):
 
         layout.addWidget(conditional_group)
 
+        # FastDTW Group
+        fastdtw_group = QGroupBox("FastDTW Settings")
+        fastdtw_layout = QFormLayout(fastdtw_group)
+
+        lbl_radius = QLabel("Sakoe-Chiba Band Radius:")
+        lbl_radius.setToolTip(
+            "Window width for approximate DTW computation. Smaller = faster but less accurate. "
+            "Typical range: 1-5. Default 2 balances speed and accuracy."
+        )
+        self.spin_fastdtw_radius = QDoubleSpinBox()
+        self.spin_fastdtw_radius.setMinimum(1)
+        self.spin_fastdtw_radius.setMaximum(10)
+        self.spin_fastdtw_radius.setSingleStep(1)
+        self.spin_fastdtw_radius.setDecimals(0)
+        self.spin_fastdtw_radius.setValue(self.config.fastdtw_radius)
+
+        fastdtw_layout.addRow(lbl_radius, self.spin_fastdtw_radius)
+
+        layout.addWidget(fastdtw_group)
+
         # Info text
         info = QLabel(
             "Configure parameters for connection measures that accept optional settings.\n\n"
@@ -170,4 +193,5 @@ class EdgeSettingsDialog(QDialog):
         """Return configured EdgeSettingsConfig."""
         return EdgeSettingsConfig(
             conditional_quantile=float(self.spin_conditional_quantile.value()),
+            fastdtw_radius=int(self.spin_fastdtw_radius.value()),
         )

@@ -224,6 +224,23 @@ QPushButton#SecondaryButton:hover {{
     color: {TEXT};
     border-color: #bae6fd;
 }}
+QPushButton#CancelButton {{
+    background-color: #7f1d1d;
+    color: #fecaca;
+    border: 1px solid #991b1b;
+    border-radius: 8px;
+    padding: 5px 10px;
+}}
+QPushButton#CancelButton:hover {{
+    background-color: #991b1b;
+    color: #fca5a5;
+    border-color: #dc2626;
+}}
+QPushButton#CancelButton:disabled {{
+    background-color: #374151;
+    color: #6b7280;
+    border-color: #4b5563;
+}}
 
 QProgressBar {{
     background-color: {BG_CONTROL};

@@ -283,6 +283,13 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         form.addWidget(self.progress)
 
+        self.btn_cancel = QPushButton("✕ Cancel Render")
+        self.btn_cancel.setObjectName("CancelButton")
+        self.btn_cancel.clicked.connect(self._cancel_render)
+        self.btn_cancel.setToolTip("Cancel current analysis and clear all networks/graphs")
+        self.btn_cancel.setEnabled(False)
+        form.addWidget(self.btn_cancel)
+
         self.lbl_status = QLabel("Select a DuckDB / SQLite file to begin.")
         self.lbl_status.setObjectName("StatusLabel")
         self.lbl_status.setWordWrap(True)
@@ -866,6 +873,7 @@ class MainWindow(QMainWindow):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self._set_controls_enabled(not busy)
+        self.btn_cancel.setEnabled(busy)  # Cancel button only enabled while rendering
 
     # -------------------------------------------------------------- run
     def _selected_transforms(self) -> list[str]:
@@ -1266,6 +1274,48 @@ class MainWindow(QMainWindow):
             self._append_log(
                 f"Edge settings: conditional_quantile={self._edge_settings.conditional_quantile:.2f}"
             )
+
+    def _cancel_render(self) -> None:
+        """Cancel current analysis and clear all visualizations."""
+        self._append_log("Cancelling render...")
+
+        # Stop pipeline worker
+        if self._worker_thread and self._worker_thread.isRunning():
+            self._worker_thread.quit()
+            self._worker_thread.wait()
+            self._append_log("Pipeline cancelled.")
+
+        # Stop evolution worker
+        if self._evolution_worker_thread and self._evolution_worker_thread.isRunning():
+            self._evolution_worker_thread.quit()
+            self._evolution_worker_thread.wait()
+            self._append_log("Evolution analysis cancelled.")
+
+        # Clear all visualizations
+        # Clear network canvas
+        self.web_view.setHtml("")
+
+        # Clear histogram canvas
+        while self.hist_canvas_layout.count():
+            widget = self.hist_canvas_layout.takeAt(0).widget()
+            if hasattr(widget, 'figure') and widget.figure:
+                plt.close(widget.figure)
+            if hasattr(widget, 'deleteLater'):
+                widget.deleteLater()
+
+        # Clear tabs
+        if hasattr(self, 'tabs_evolution'):
+            for i in range(self.tabs_evolution.count()):
+                tab = self.tabs_evolution.widget(i)
+                if hasattr(tab, 'canvas') and tab.canvas:
+                    if hasattr(tab.canvas, 'figure'):
+                        plt.close(tab.canvas.figure)
+
+        # Reset UI
+        self.progress.setValue(0)
+        self.lbl_status.setText("Render cancelled. Polars data retained.")
+        self._set_busy(False)
+        self._append_log("All networks and graphs cleared.")
 
     def _launch_evolution_worker(self) -> None:
         """Launch evolution analysis in background."""

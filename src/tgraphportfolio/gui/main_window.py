@@ -28,11 +28,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvas
 from matplotlib.figure import Figure
@@ -485,22 +487,140 @@ class MainWindow(QMainWindow):
             "Building… previous histogram cleared. See the process log for progress."
         )
 
+    def _create_threshold_slider(
+        self,
+        layout: QVBoxLayout,
+        fig: Figure,
+        canvas: FigureCanvas,
+        measure_df: "pl.DataFrame",
+        measure_name: str,
+    ) -> None:
+        """Create a threshold slider for dynamic degree histogram adjustment."""
+        from tgraphportfolio.analysis.degree_hist import histogram_title, render_degree_histogram
+        from tgraphportfolio.analysis.network import build_corr_nx
+        import polars as pl
+
+        # Determine slider range based on measure type
+        if measure_name == "distance_correlation":
+            min_val, max_val = 0.0, 1.0
+        else:  # Pearson, Spearman, ACE
+            min_val, max_val = -1.0, 1.0
+
+        # Create slider container
+        slider_container = QWidget()
+        slider_layout = QHBoxLayout()
+        slider_layout.setContentsMargins(4, 0, 4, 0)
+
+        # Label showing current threshold
+        lbl_threshold = QLabel("Threshold:")
+        lbl_threshold.setStyleSheet("color: #e2e8f0; font-size: 9px;")
+        slider_layout.addWidget(lbl_threshold)
+
+        # Slider
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(int(min_val * 100), int(max_val * 100))
+        slider.setValue(int(self.spin_threshold.value() * 100))
+        slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        slider.setTickInterval(1)  # Tick every 0.01
+        slider.setStyleSheet(
+            """
+            QSlider::groove:horizontal {
+                background: #334155;
+                height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #38bdf8;
+                width: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #7dd3fc;
+            }
+            """
+        )
+        slider_layout.addWidget(slider, 1)
+
+        # Value display
+        lbl_value = QLabel(f"{self.spin_threshold.value():.2f}")
+        lbl_value.setStyleSheet("color: #cbd5e1; font-size: 9px; min-width: 35px; text-align: right;")
+        slider_layout.addWidget(lbl_value)
+
+        slider_container.setLayout(slider_layout)
+        layout.addWidget(slider_container)
+
+        # Store references and connect signal
+        def on_slider_changed(value: int) -> None:
+            try:
+                threshold = value / 100.0
+                lbl_value.setText(f"{threshold:.2f}")
+
+                # Rebuild network with new threshold
+                new_graph = build_corr_nx(measure_df, independent_threshold=threshold)
+
+                # Get the title from the current figure (approximately)
+                hist_title_text = fig.axes[0].get_title() if fig.axes else "Degree Distribution"
+
+                # Render new histogram
+                new_fig = render_degree_histogram(new_graph, hist_title_text, threshold)
+
+                # Store data on figure for cursor
+                if hasattr(fig, "_histogram_cursor_data"):
+                    ax, degrees, bin_edges = fig._histogram_cursor_data
+                    new_fig._histogram_cursor_data = (new_fig.axes[0], dict(new_graph.degree()), new_fig.axes[0].patches[0].get_height() if new_fig.axes[0].patches else np.array([]))
+
+                # Update canvas with new figure
+                canvas.figure.clear()
+                canvas.figure = new_fig
+                canvas.draw()
+
+                # Re-attach cursor if needed
+                if hasattr(new_fig, "_histogram_cursor_data"):
+                    try:
+                        from tgraphportfolio.analysis.degree_hist import _HistogramCursor
+                        ax, degrees, bin_edges = new_fig._histogram_cursor_data
+                        if isinstance(bin_edges, dict):
+                            bin_edges = np.linspace(0, max(degrees.values()) + 1, 16)
+                        cursor = _HistogramCursor(new_fig.axes[0], degrees, bin_edges, canvas)
+                        canvas._cursor = cursor
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                self._append_log(f"Error updating histogram: {str(e)}")
+
+        slider.sliderMoved.connect(on_slider_changed)
+        slider.valueChanged.connect(on_slider_changed)
+
     def _show_histogram_png(self, fig: Figure) -> None:
-        """Display degree histogram as interactive matplotlib canvas."""
+        """Display degree histogram as interactive matplotlib canvas with threshold slider."""
         try:
             # Clear any existing widgets and close old figures
             while self.hist_canvas_layout.count():
                 widget = self.hist_canvas_layout.takeAt(0).widget()
                 if isinstance(widget, FigureCanvas) and widget.figure:
                     plt.close(widget.figure)
-                if widget:
+                if hasattr(widget, 'deleteLater'):
                     widget.deleteLater()
+
+            # Create container for canvas + slider
+            container = QWidget()
+            container_layout = QVBoxLayout()
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(8)
 
             # Create and add canvas
             canvas = FigureCanvas(fig)
             canvas.setStyleSheet("background-color: transparent;")
-            self.hist_canvas_layout.addWidget(canvas)
+            container_layout.addWidget(canvas, 1)
             canvas.draw()
+
+            # Add threshold slider if measure_df is available
+            if hasattr(fig, "_measure_df_stored") and fig._measure_df_stored is not None:
+                self._create_threshold_slider(
+                    container_layout, fig, canvas, fig._measure_df_stored, fig._measure_name
+                )
 
             # Attach cursor if data is available (store reference to prevent garbage collection)
             if hasattr(fig, "_histogram_cursor_data"):
@@ -511,6 +631,9 @@ class MainWindow(QMainWindow):
                     canvas._cursor = cursor  # Keep reference to prevent garbage collection
                 except Exception as e:
                     self._append_log(f"Cursor error (histogram): {str(e)}")
+
+            container.setLayout(container_layout)
+            self.hist_canvas_layout.addWidget(container)
         except Exception as e:
             self._append_log(f"Histogram display error: {str(e)}")
 

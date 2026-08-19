@@ -11,7 +11,7 @@ import polars as pl
 
 from .config import PipelineConfig
 from .data_access import load_table
-from .degree_hist import histogram_title, render_degree_histogram
+from .degree_hist import histogram_title, render_degree_histogram, render_degree_histogram_with_dynamic_threshold
 from .gui_cache import GuiDataCache
 from .measures import compute_measure
 from .network import build_corr_nx, pivot_to_wide
@@ -138,6 +138,9 @@ def run_pipeline(
     graph = build_corr_nx(
         measure_df, independent_threshold=cfg.independent_threshold
     )
+    # Store measure_df on graph for dynamic threshold adjustment in GUI
+    graph._measure_df = measure_df
+    graph._measure_name = cfg.measure
     _status(
         f"Network built: |N|={graph.number_of_nodes()}, "
         f"|E|={graph.number_of_edges():,}."
@@ -152,7 +155,11 @@ def run_pipeline(
         filter_value=cfg.filter_value,
     )
     _status("Rendering degree histogram…")
-    hist_fig = render_degree_histogram(graph, hist_title)
+    hist_fig = render_degree_histogram_with_dynamic_threshold(
+        measure_df, hist_title, current_threshold=cfg.independent_threshold
+    )
+    # Also store measure info on the figure for GUI slider
+    hist_fig._measure_name = cfg.measure
 
     _status("Done.")
     return PipelineResult(

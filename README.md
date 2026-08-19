@@ -86,7 +86,7 @@ Network evolution analysis extends static network snapshots into a **time series
 
 #### Connection Measures
 
-Each window's network is constructed by computing a pairwise relationship measure (distance correlation, Pearson, Spearman, or ACE maximal correlation) on all node pairs within that window. Weak connections are pruned using an **edge threshold** (e.g., independent_threshold = 0.33 means keep edges with correlation ≥ 0.67 or distance-correlation ≥ 0.67).
+Each window's network is constructed by computing a pairwise relationship measure (distance correlation, Pearson, Spearman, or ACE maximal correlation) on all node pairs within that window. Weak connections are pruned using an **edge threshold** (e.g., independent_threshold = 0.4 means keep edges with measure ≥ 0.4, uniformly across all connection types).
 
 ### Evolution Settings
 
@@ -101,7 +101,7 @@ The **Evolution Analysis Settings** dialog controls the temporal analysis parame
 | **Num nodes to plot** | 10 | Number of nodes to visualize in centrality and community plots; capped at ⌊total_nodes / 2⌋ |
 | **Community method** | fixed | Strategy for detecting communities per window (see Community Detection Methods below) |
 | **Max communities** | 10 | For `fixed` method: exact number of communities per window. For optimization methods: upper bound for search. |
-| **Edge threshold** | 0.33 (read-only) | Correlation/dissimilarity threshold used to prune edges; determined by connection measure selection |
+| **Edge threshold** | 0.33 (read-only) | Keep edges where measure ≥ threshold (e.g., 0.33 means correlation ≥ 0.33 for all connection measures) |
 
 ### Community Detection Methods
 

@@ -128,10 +128,21 @@ def histogram_title(
 def render_degree_histogram(
     graph: nx.Graph,
     title: str,
+    current_threshold: float | None = None,
     *,
     bins: int = 15,
 ) -> Figure:
-    """Return a matplotlib Figure of the degree histogram."""
+    """Return a matplotlib Figure of the degree histogram.
+
+    Args:
+        graph: NetworkX graph with degree data.
+        title: Title for the histogram.
+        current_threshold: Current independence threshold (for reference, not used in rendering).
+        bins: Number of histogram bins.
+
+    Returns:
+        Matplotlib Figure object.
+    """
     degrees = dict(graph.degree())
     deg_list = list(degrees.values())
     if not deg_list:
@@ -195,6 +206,33 @@ def render_degree_histogram(
 
     # Store data for cursor attachment later (after FigureCanvas is created)
     fig._histogram_cursor_data = (ax, degrees, bin_edges)
+
+    return fig
+
+
+def render_degree_histogram_with_dynamic_threshold(
+    measure_df,
+    title: str,
+    current_threshold: float = 0.33,
+    *,
+    bins: int = 15,
+) -> Figure:
+    """Return a histogram figure with measure_df attached for dynamic threshold adjustment.
+
+    This is called from the pipeline to create a figure that can be dynamically updated
+    by the GUI with different thresholds.
+    """
+    from tgraphportfolio.analysis.network import build_corr_nx
+
+    # Build the initial graph with current threshold
+    graph = build_corr_nx(measure_df, independent_threshold=current_threshold)
+
+    # Render the histogram
+    fig = render_degree_histogram(graph, title, current_threshold, bins=bins)
+
+    # Attach measure_df for dynamic threshold adjustment
+    fig._measure_df_stored = measure_df
+    fig._current_threshold = current_threshold
 
     return fig
 

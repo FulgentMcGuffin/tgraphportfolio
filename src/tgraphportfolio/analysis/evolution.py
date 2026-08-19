@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -19,6 +20,10 @@ from sklearn.metrics import (
 )
 
 from . import measures, network, transforms
+
+# Suppress sklearn ConvergenceWarning from KMeans when n_distinct_clusters < n_clusters
+# This occurs when analyzing sparse networks with highly clustered node embeddings
+warnings.filterwarnings("ignore", message="Number of distinct clusters.*found smaller")
 
 ProgressCallback = Callable[[int, int, str], None]
 StatusCallback = Callable[[str], None]

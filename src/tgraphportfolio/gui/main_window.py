@@ -35,9 +35,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 import numpy as np
+import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
 
 from tgraphportfolio.analysis.config import PipelineConfig
 from tgraphportfolio.analysis.data_access import (
@@ -560,40 +562,75 @@ class MainWindow(QMainWindow):
                 # Rebuild network with new threshold
                 new_graph = build_corr_nx(measure_df, independent_threshold=threshold)
 
-                # Get the title from the current figure
-                hist_title_text = fig.axes[0].get_title() if fig.axes else "Degree Distribution"
-
-                # Render new histogram
-                new_fig = render_degree_histogram(new_graph, hist_title_text, threshold)
-
-                # Extract bin_edges from the new figure's histogram patches
-                if new_fig.axes and new_fig.axes[0].patches:
-                    # Calculate bin edges from histogram patches
-                    patches = new_fig.axes[0].patches
-                    bin_edges = np.array([p.get_x() for p in patches] + [patches[-1].get_x() + patches[-1].get_width()])
-                else:
-                    # Fallback: create default bin edges
-                    degrees_dict = dict(new_graph.degree())
-                    bin_edges = np.linspace(0, max(degrees_dict.values()) + 1 if degrees_dict else 1, 16)
-
-                # Store data on figure for cursor
+                # Extract degree data
                 degrees_dict = dict(new_graph.degree())
-                new_fig._histogram_cursor_data = (new_fig.axes[0], degrees_dict, bin_edges)
+                deg_list = list(degrees_dict.values())
 
-                # Update canvas: replace the old figure with the new one
-                old_fig = canvas.figure
-                canvas.figure = new_fig
-                canvas.draw()
+                if not deg_list:
+                    self._append_log("No nodes to plot for updated histogram")
+                    return
 
-                # Close the old figure to free memory
-                if old_fig:
-                    plt.close(old_fig)
+                # Reuse existing figure and axes to maintain canvas size
+                ax = fig.axes[0]
+                ax.clear()
+
+                # Recalculate histogram bins
+                mean_deg = float(np.mean(deg_list))
+                lo, hi = int(min(deg_list)), int(max(deg_list))
+                _counts, bin_edges = np.histogram(deg_list, bins=15)
+
+                # Redraw histogram on same axes
+                sns.histplot(
+                    deg_list,
+                    bins=bin_edges,
+                    kde=True,
+                    color="#38bdf8",
+                    edgecolor="#0ea5e9",
+                    alpha=0.75,
+                    line_kws={"color": "#7dd3fc", "linewidth": 2},
+                    ax=ax,
+                )
+
+                ax.axvline(
+                    mean_deg,
+                    color="#a78bfa",
+                    linewidth=2.5,
+                    linestyle="--",
+                    label=f"Mean = {mean_deg:2.0f}",
+                )
+
+                ax.set_xlim(max(0, lo - 1), hi + 1)
+                ax.xaxis.set_major_locator(MaxNLocator(nbins=8, integer=True, prune=None))
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+                ax.minorticks_off()
+
+                ax.set_title(fig.axes[0].get_title(), color="#e2e8f0", fontsize=13, pad=10)
+                ax.set_xlabel("Number of Connections", color="#cbd5e1", fontsize=10)
+                ax.set_ylabel("Density", color="#cbd5e1", fontsize=10)
+                ax.tick_params(axis="both", which="major", colors="#cbd5e1", labelsize=10)
+                ax.grid(True, axis="both", which="major", color="#334155", linewidth=0.8, alpha=0.7)
+                ax.set_axisbelow(True)
+
+                for spine in ax.spines.values():
+                    spine.set_color("#475569")
+
+                legend = ax.legend(loc="best", fontsize=11, frameon=True)
+                legend.get_frame().set_facecolor("#1a1c24")
+                legend.get_frame().set_edgecolor("#7dd3fc")
+                for text in legend.get_texts():
+                    text.set_color("#cbd5e1")
+
+                # Update cursor data
+                fig._histogram_cursor_data = (ax, degrees_dict, bin_edges)
+
+                # Redraw canvas without resizing
+                canvas.draw_idle()
 
                 # Re-attach cursor
                 try:
                     from tgraphportfolio.analysis.degree_hist import _HistogramCursor
-                    ax, degrees, bin_edges = new_fig._histogram_cursor_data
-                    cursor = _HistogramCursor(ax, degrees, bin_edges, canvas)
+                    ax, degrees, bin_edges_data = fig._histogram_cursor_data
+                    cursor = _HistogramCursor(ax, degrees, bin_edges_data, canvas)
                     canvas._cursor = cursor
                 except Exception as e:
                     self._append_log(f"Cursor error during update: {str(e)}")

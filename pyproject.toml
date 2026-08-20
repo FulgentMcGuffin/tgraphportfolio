@@ -9,6 +9,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "black>=26.5.1",
     "dcor>=0.7",
     "duckdb>=1.6.0.dev343",
     "framecache",

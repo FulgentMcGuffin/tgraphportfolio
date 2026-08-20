@@ -18,6 +18,8 @@ __pycache__/
 # Notebook-generated pyvis output
 _pyvis_corr_network.html
 _smoke_network.html
+temp.html
+/**/temp.html
 
 # Claude
 .claude/
@@ -191,3 +193,5 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+src/tgraphportfolio/multilayer_edge_types.png
+src/tgraphportfolio/multilayer_evolution.png

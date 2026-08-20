@@ -16,12 +16,14 @@ dependencies = [
     "graspologic",
     "ipykernel>=7.3.0",
     "ipython>=9.16.1",
+    "multilayer-netviz",
     "networkx>=3.6.1",
     "numba>=0.66",
     "numpy>=2.5.2",
     "pandas>=3.0.5",
     "plotnine>=0.15.7",
     "polars>=1.43.2",
+    "py3plex",
     "pyarrow>=25.0.1",
     "pyside6>=6.8",
     "python-dotenv>=1.1.0",
@@ -53,3 +55,5 @@ prerelease = "allow"
 ace_cream = { git = "https://github.com/FulgentMcGuffin/ace_cream.git" }
 framecache = { git = "https://github.com/FulgentMcGuffin/framecache.git" }
 graspologic = { git = "https://github.com/FulgentMcGuffin/graspologic.git" }
+py3plex = { git = "https://github.com/SkBlaz/py3plex.git" }
+multilayer-netviz = { git = "https://github.com/FulgentMcGuffin/MultiLayerNetViz.git" }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import colorsys
 import re
 from collections.abc import Hashable
 
@@ -13,22 +14,7 @@ CANVAS_BG = "#0f172a"
 NODE_COLOR = "#38bdf8"
 NODE_FONT = "#e2e8f0"
 TITLE_COLOR = "#e2e8f0"
-INTER_EDGE_COLOR = "#a78bfa"
-
-_TERM_PALETTE = (
-    "#38bdf8",
-    "#34d399",
-    "#fbbf24",
-    "#f87171",
-    "#a78bfa",
-    "#fb7185",
-    "#22d3ee",
-    "#4ade80",
-    "#f97316",
-    "#818cf8",
-    "#e879f9",
-    "#2dd4bf",
-)
+INTER_EDGE_COLOR = "#64748b"
 
 
 def _weight_to_color(norm_weight: float) -> str:
@@ -228,7 +214,6 @@ def graph_to_html(
     net.toggle_physics(True)
     return _theme_pyvis_html(net.generate_html(notebook=False))
 
-
 def _multilayer_node_id(node: Hashable) -> str:
     if isinstance(node, tuple) and len(node) == 2:
         return f"{node[0]}@{node[1]}"
@@ -241,6 +226,42 @@ def _normalize(weight: float, min_weight: float, max_weight: float) -> float:
     return (weight - min_weight) / (max_weight - min_weight)
 
 
+def _term_years(term: Hashable) -> float:
+    """Parse Y000p5 → 0.5, Y030p0 → 30.0; unknown terms sort last."""
+    text = str(term)
+    if len(text) >= 2 and text[0] == "Y" and "p" in text:
+        whole, frac = text[1:].split("p", 1)
+        try:
+            return int(whole) + int(frac) / 10.0
+        except ValueError:
+            return float("inf")
+    return float("inf")
+
+
+def _hex_rgb(r: float, g: float, b: float) -> str:
+    return f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
+
+
+def _source_color(source_idx: int, n_sources: int, intensity: float) -> str:
+    """Hue from issuer index; saturation/value rise with term intensity in [0, 1]."""
+    hue = source_idx / max(n_sources, 1)
+    sat = 0.40 + 0.55 * intensity
+    val = 0.32 + 0.63 * intensity
+    return _hex_rgb(*colorsys.hsv_to_rgb(hue, sat, val))
+
+
+def _strength_to_color(norm_weight: float) -> str:
+    """Bright blue (weak) → white → yellow (strong)."""
+    t = max(0.0, min(1.0, norm_weight))
+    if t < 0.5:
+        u = t * 2.0
+        r, g, b = 0.0 + u, 0.71 + 0.29 * u, 1.0
+    else:
+        u = (t - 0.5) * 2.0
+        r, g, b = 1.0 - 0.02 * u, 1.0 - 0.20 * u, 1.0 - 0.92 * u
+    return _hex_rgb(r, g, b)
+
+
 def multilayer_graph_to_html(
     M: nx.Graph,
     title: str = "Multi-Layer Yield Curve Network",
@@ -249,8 +270,9 @@ def multilayer_graph_to_html(
 ) -> str:
     """Render a multiplex graph as a source×term grid (physics off, zoom-to-fit).
 
-    Nodes are ``(source, term)`` tuples. Intra-layer edges are colored by
-    weight; inter-layer edges are purple. Hover for labels; scroll to zoom.
+    Nodes are ``(source, term)`` tuples. Column hue is the issuer; size and
+    brightness increase with maturity. Intra-layer edges use a blue→white→yellow
+    scale by weight and curve so non-adjacent issuer pairs stay visible.
     """
     if M.number_of_edges() == 0:
         return (
@@ -262,12 +284,10 @@ def multilayer_graph_to_html(
 
     tuple_nodes = [n for n in M.nodes() if isinstance(n, tuple) and len(n) == 2]
     sources = sorted({n[0] for n in tuple_nodes})
-    terms = sorted({n[1] for n in tuple_nodes})
-    term_colors = {
-        term: _TERM_PALETTE[i % len(_TERM_PALETTE)] for i, term in enumerate(terms)
-    }
+    terms = sorted({n[1] for n in tuple_nodes}, key=_term_years)
     src_x = {s: i for i, s in enumerate(sources)}
     term_y = {t: i for i, t in enumerate(terms)}
+    n_terms = max(len(terms) - 1, 1)
     x_gap = 180
     y_gap = 140
 
@@ -299,8 +319,7 @@ def multilayer_graph_to_html(
             "zoomView": true,
             "dragView": true,
             "tooltipDelay": 80
-          },
-          "edges": {"smooth": {"type": "continuous"}}
+          }
         }
         """
     )
@@ -311,33 +330,64 @@ def multilayer_graph_to_html(
         id_map[node] = node_id
         if isinstance(node, tuple) and len(node) == 2:
             source, term = node
+            intensity = term_y.get(term, 0) / n_terms
             x, y = src_x.get(source, 0) * x_gap, term_y.get(term, 0) * y_gap
-            color = term_colors.get(term, NODE_COLOR)
+            color = _source_color(src_x.get(source, 0), len(sources), intensity)
+            size = 14 + 24 * intensity
             label = str(source)
             tip = f"{source} · {term}"
         else:
-            x, y, color, label, tip = 0, 0, NODE_COLOR, node_id, node_id
+            x, y, color, size, label, tip = 0, 0, NODE_COLOR, 22, node_id, node_id
         net.add_node(
             node_id,
             label=label,
-            size=22,
+            size=size,
             color=color,
             title=tip,
             x=x,
             y=y,
             physics=False,
-            font={"size": 16, "face": "arial", "color": NODE_FONT},
+            font={
+                "size": 14 + int(6 * (size - 14) / 24),
+                "face": "arial",
+                "color": NODE_FONT,
+            },
         )
 
+    inter_edges = []
+    intra_edges = []
     for u, v, data in M.edges(data=True):
-        layer = data.get("layer", "intra")
-        weight = float(data.get("weight", 1.0))
-        if layer == "inter":
-            color, width_px, tip = INTER_EDGE_COLOR, 1.6, f"inter-layer: {weight:.2f}"
+        if data.get("layer") == "inter":
+            inter_edges.append((u, v, data))
         else:
-            color = _weight_to_color(_normalize(weight, min_w, max_w))
-            width_px = 1.2 + _normalize(weight, min_w, max_w) * 2.4
-            tip = f"intra-layer ({data.get('term', '?')}): {weight:.3f}"
-        net.add_edge(id_map[u], id_map[v], width=width_px, color=color, title=tip)
+            intra_edges.append((u, v, data))
+    intra_edges.sort(key=lambda e: float(e[2].get("weight", 0.0)))
+
+    for u, v, data in inter_edges:
+        weight = float(data.get("weight", 1.0))
+        net.add_edge(
+            id_map[u],
+            id_map[v],
+            width=0.8,
+            color={"color": INTER_EDGE_COLOR, "opacity": 0.35},
+            title=f"inter-layer (same issuer, adjacent terms): {weight:.2f}",
+            smooth=False,
+        )
+
+    for u, v, data in intra_edges:
+        weight = float(data.get("weight", 1.0))
+        t = _normalize(weight, min_w, max_w)
+        span = 1
+        if isinstance(u, tuple) and isinstance(v, tuple):
+            span = abs(src_x.get(u[0], 0) - src_x.get(v[0], 0))
+        roundness = min(0.65, 0.06 + 0.035 * span)
+        net.add_edge(
+            id_map[u],
+            id_map[v],
+            width=1.4 + 7.0 * t,
+            color=_strength_to_color(t),
+            title=f"intra-layer {data.get('term', '?')}: strength={weight:.3f}",
+            smooth={"type": "curvedCW", "roundness": roundness},
+        )
 
     return _theme_pyvis_html(net.generate_html(notebook=False))

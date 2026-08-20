@@ -70,8 +70,10 @@ def cache_key_parts(cfg: PipelineConfig) -> dict[str, str]:
         "date_column": cfg.date_column,
         "name_column": cfg.name_column,
         "value_column": cfg.value_column,
+        "filter_mode": cfg.filter_mode,
         "filter_column": _none_str(cfg.filter_column),
         "filter_value": _none_str(cfg.filter_value),
+        "where_clause": _none_str(cfg.where_clause),
         "transforms": _transforms_key(cfg.transforms),
         "date_start": _iso(cfg.date_start),
         "date_end": _iso(cfg.date_end),
@@ -93,9 +95,13 @@ class GuiDataCache:
         fc = frame_cache or create_gui_frame_cache()
 
         @fc.cache(method="pyarrow")
-        def load_columns(db_path: str, table: str, columns: str) -> pl.DataFrame:
+        def load_columns(
+            db_path: str, table: str, columns: str, where_clause: str
+        ) -> pl.DataFrame:
             cols = [c for c in columns.split(",") if c]
-            return load_table(db_path, table, columns=cols or None)
+            return load_table(
+                db_path, table, columns=cols or None, where_clause=where_clause or None
+            )
 
         @fc.cache(method="pyarrow")
         def prepare_frame(
@@ -105,17 +111,20 @@ class GuiDataCache:
             date_column: str,
             name_column: str,
             value_column: str,
+            filter_mode: str,
             filter_column: str,
             filter_value: str,
+            where_clause: str,
             transforms: str,
             date_start: str,
             date_end: str,
         ) -> pl.DataFrame:
-            df = load_columns(db_path, table, columns)
+            sql_where = where_clause if filter_mode == "where_clause" else ""
+            df = load_columns(db_path, table, columns, sql_where)
             df = df.with_columns(pl.col(date_column).cast(pl.Date, strict=False))
             df = df.sort(date_column, name_column)
 
-            if filter_column and filter_value:
+            if filter_mode == "column_value" and filter_column and filter_value:
                 df = df.filter(pl.col(filter_column).cast(pl.Utf8) == filter_value)
 
             if date_start:
@@ -144,8 +153,10 @@ class GuiDataCache:
             date_column: str,
             name_column: str,
             value_column: str,
+            filter_mode: str,
             filter_column: str,
             filter_value: str,
+            where_clause: str,
             transforms: str,
             date_start: str,
             date_end: str,
@@ -158,8 +169,10 @@ class GuiDataCache:
                 date_column,
                 name_column,
                 value_column,
+                filter_mode,
                 filter_column,
                 filter_value,
+                where_clause,
                 transforms,
                 date_start,
                 date_end,
@@ -198,8 +211,10 @@ class GuiDataCache:
                 k["date_column"],
                 k["name_column"],
                 k["value_column"],
+                k["filter_mode"],
                 k["filter_column"],
                 k["filter_value"],
+                k["where_clause"],
                 k["transforms"],
                 k["date_start"],
                 k["date_end"],
@@ -219,8 +234,10 @@ class GuiDataCache:
                 k["date_column"],
                 k["name_column"],
                 k["value_column"],
+                k["filter_mode"],
                 k["filter_column"],
                 k["filter_value"],
+                k["where_clause"],
                 k["transforms"],
                 k["date_start"],
                 k["date_end"],
@@ -249,8 +266,10 @@ class GuiDataCache:
             k["date_column"],
             k["name_column"],
             k["value_column"],
+            k["filter_mode"],
             k["filter_column"],
             k["filter_value"],
+            k["where_clause"],
             k["transforms"],
             k["date_start"],
             k["date_end"],
@@ -282,8 +301,10 @@ class GuiDataCache:
                 k["date_column"],
                 k["name_column"],
                 k["value_column"],
+                k["filter_mode"],
                 k["filter_column"],
                 k["filter_value"],
+                k["where_clause"],
                 k["transforms"],
                 k["date_start"],
                 k["date_end"],

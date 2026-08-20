@@ -16,8 +16,10 @@ class PipelineConfig:
     date_column: str
     name_column: str
     value_column: str
+    filter_mode: str = "column_value"  # "column_value" or "where_clause"
     filter_column: str | None = None
     filter_value: str | None = None
+    where_clause: str | None = None  # raw SQL boolean expression (goes after WHERE)
     transforms: list[str] = field(default_factory=list)
     measure: str = "distance_correlation"
     date_start: date | None = None

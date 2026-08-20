@@ -11,7 +11,11 @@ import polars as pl
 
 from .config import PipelineConfig
 from .data_access import load_table
-from .degree_hist import histogram_title, render_degree_histogram, render_degree_histogram_with_dynamic_threshold
+from .degree_hist import (
+    histogram_title,
+    render_degree_histogram,
+    render_degree_histogram_with_dynamic_threshold,
+)
 from .gui_cache import GuiDataCache
 from .measures import compute_measure
 from .network import build_corr_nx, pivot_to_wide
@@ -38,18 +42,25 @@ def _needed_columns(cfg: PipelineConfig) -> list[str]:
     return list(dict.fromkeys(cols))
 
 
-def _prepare_frame(cfg: PipelineConfig, status: StatusCallback | None = None) -> pl.DataFrame:
+def _prepare_frame(
+    cfg: PipelineConfig, status: StatusCallback | None = None
+) -> pl.DataFrame:
     needed = _needed_columns(cfg)
-    df = load_table(cfg.db_path, cfg.table, columns=needed)
+    where_clause = cfg.where_clause if cfg.filter_mode == "where_clause" else None
+    if where_clause and status is not None:
+        status(f"Loading with SQL filter: WHERE {where_clause}…")
+    df = load_table(cfg.db_path, cfg.table, columns=needed, where_clause=where_clause)
 
     df = df.with_columns(pl.col(cfg.date_column).cast(pl.Date, strict=False))
     df = df.sort(cfg.date_column, cfg.name_column)
 
-    if cfg.filter_column and cfg.filter_value is not None:
+    if (
+        cfg.filter_mode == "column_value"
+        and cfg.filter_column
+        and cfg.filter_value is not None
+    ):
         if status is not None:
-            status(
-                f"Filtering {cfg.filter_column} = {cfg.filter_value!r}…"
-            )
+            status(f"Filtering {cfg.filter_column} = {cfg.filter_value!r}…")
         df = df.filter(pl.col(cfg.filter_column).cast(pl.Utf8) == cfg.filter_value)
 
     if cfg.date_start is not None:
@@ -138,15 +149,17 @@ def run_pipeline(
         n_pairs = sum(len(nodes[k:]) for k in range(len(nodes)))
         _status(f"Computing {cfg.measure} ({n_pairs:,} pairs)…")
         measure_df = compute_measure(
-            cfg.measure, wide.select(nodes), nodes, progress=progress, edge_settings=edge_settings
+            cfg.measure,
+            wide.select(nodes),
+            nodes,
+            progress=progress,
+            edge_settings=edge_settings,
         )
 
     _status(
         f"Building network (independence threshold={cfg.independent_threshold:.2f})…"
     )
-    graph = build_corr_nx(
-        measure_df, independent_threshold=cfg.independent_threshold
-    )
+    graph = build_corr_nx(measure_df, independent_threshold=cfg.independent_threshold)
     # Store measure_df on graph for dynamic threshold adjustment in GUI
     graph._measure_df = measure_df
     graph._measure_name = cfg.measure

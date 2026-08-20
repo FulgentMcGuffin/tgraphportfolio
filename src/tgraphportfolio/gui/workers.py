@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import date
 
@@ -25,6 +26,18 @@ from tgraphportfolio.analysis.gui_cache import GuiDataCache
 from tgraphportfolio.analysis.pipeline import PipelineResult, run_pipeline
 
 
+class WorkerCancelled(Exception):
+    """Raised from inside a progress/status callback to unwind a cancelled worker.
+
+    ``run_pipeline``/``compute_evolution_metrics`` invoke their ``progress``
+    callback on every pair/window with no cancellation hook of their own, so
+    this is the cheapest place to interrupt a long-running computation:
+    raising here propagates as a normal exception up through the (otherwise
+    unmodified) computation and back into ``run()``, where it is caught
+    separately from real failures.
+    """
+
+
 @dataclass
 class EvolutionResult:
     """Artifacts produced by evolution analysis."""
@@ -43,35 +56,49 @@ class PipelineWorker(QObject):
     status = Signal(str)
     finished = Signal(object)  # PipelineResult
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(
         self,
         config: PipelineConfig,
         data_cache: GuiDataCache | None = None,
         edge_settings: dict | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._data_cache = data_cache
         self._edge_settings = edge_settings or {}
+        self._cancel_event = cancel_event or threading.Event()
         # Will be populated during run
         self.df_returns: pl.DataFrame | None = None
         self.dates: list[date] | None = None
         # Store original date column name for reference
         self.date_column_original: str = config.date_column
 
+    def _progress(self, done: int, total: int, desc: str) -> None:
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
+        self.progress.emit(done, total, desc)
+
+    def _status(self, msg: str) -> None:
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
+        self.status.emit(msg)
+
     @Slot()
     def run(self) -> None:
         try:
             result: PipelineResult = run_pipeline(
                 self._config,
-                progress=lambda done, total, desc: self.progress.emit(
-                    done, total, desc
-                ),
-                status=lambda msg: self.status.emit(msg),
+                progress=self._progress,
+                status=self._status,
                 data_cache=self._data_cache,
                 edge_settings=self._edge_settings,
             )
+            if self._cancel_event.is_set():
+                raise WorkerCancelled()
+
             # Store prepared data for evolution analysis
             # Get from cache if available
             from tgraphportfolio.analysis.data_access import load_table
@@ -86,25 +113,36 @@ class PipelineWorker(QObject):
                 if self._config.filter_column:
                     needed_cols.append(self._config.filter_column)
 
-                df = load_table(self._config.db_path, self._config.table, columns=needed_cols)
-                df = df.with_columns(pl.col(self._config.date_column).cast(pl.Date, strict=False))
+                df = load_table(
+                    self._config.db_path, self._config.table, columns=needed_cols
+                )
+                df = df.with_columns(
+                    pl.col(self._config.date_column).cast(pl.Date, strict=False)
+                )
                 df = df.sort(self._config.date_column, self._config.name_column)
 
                 if self._config.filter_column and self._config.filter_value is not None:
                     df = df.filter(
-                        pl.col(self._config.filter_column).cast(pl.Utf8) == self._config.filter_value
+                        pl.col(self._config.filter_column).cast(pl.Utf8)
+                        == self._config.filter_value
                     )
 
                 if self._config.date_start is not None:
-                    df = df.filter(pl.col(self._config.date_column) >= self._config.date_start)
+                    df = df.filter(
+                        pl.col(self._config.date_column) >= self._config.date_start
+                    )
                 if self._config.date_end is not None:
-                    df = df.filter(pl.col(self._config.date_column) <= self._config.date_end)
+                    df = df.filter(
+                        pl.col(self._config.date_column) <= self._config.date_end
+                    )
 
-                df = df.drop_nulls(subset=[
-                    self._config.date_column,
-                    self._config.name_column,
-                    self._config.value_column,
-                ])
+                df = df.drop_nulls(
+                    subset=[
+                        self._config.date_column,
+                        self._config.name_column,
+                        self._config.value_column,
+                    ]
+                )
 
                 # Apply transforms
                 df = apply_transforms(
@@ -117,11 +155,13 @@ class PipelineWorker(QObject):
 
                 # Normalize column names for evolution analysis
                 # Rename to standard internal names to avoid column name issues
-                df = df.rename({
-                    self._config.date_column: "Date",
-                    self._config.name_column: "Name",
-                    self._config.value_column: "Close",
-                })
+                df = df.rename(
+                    {
+                        self._config.date_column: "Date",
+                        self._config.name_column: "Name",
+                        self._config.value_column: "Close",
+                    }
+                )
 
                 self.df_returns = df
                 self.dates = [d for d in df.get_column("Date").unique().sort()]
@@ -129,6 +169,8 @@ class PipelineWorker(QObject):
                 pass  # Evolution worker will handle missing data gracefully
 
             self.finished.emit(result)
+        except WorkerCancelled:
+            self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001 — surface to UI
             self.failed.emit(str(exc))
 
@@ -140,6 +182,7 @@ class EvolutionWorker(QObject):
     status = Signal(str)
     finished = Signal(object)  # EvolutionResult
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(
         self,
@@ -147,17 +190,19 @@ class EvolutionWorker(QObject):
         dates: list[date],
         evolution_config: EvolutionConfig,
         data_cache: GuiDataCache | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         super().__init__()
         self.df_returns = df_returns
         self.dates = dates
         self.evolution_config = evolution_config
         self.data_cache = data_cache
+        self._cancel_event = cancel_event or threading.Event()
 
     @Slot()
     def run(self) -> None:
         try:
-            self.status.emit("Computing evolution metrics...")
+            self._status_wrapper("Computing evolution metrics...")
 
             # Compute metrics (node-level, network-level, and per-window graphs)
             # Use normalized column names (Date, Name, Close)
@@ -169,7 +214,7 @@ class EvolutionWorker(QObject):
                 name_column="Name",
                 value_column="Close",
                 progress=self._progress_wrapper,
-                status=self.status.emit,
+                status=self._status_wrapper,
             )
             node_metrics = metrics_result.node_metrics
             network_metrics = metrics_result.network_metrics
@@ -179,10 +224,10 @@ class EvolutionWorker(QObject):
                 self.failed.emit("No windows produced with minimum node count")
                 return
 
-            self.status.emit("Rendering weighted-degree heatmap...")
+            self._status_wrapper("Rendering weighted-degree heatmap...")
             heatmap_fig = render_weighted_degree_heatmap(node_metrics)
 
-            self.status.emit("Rendering centrality trajectories...")
+            self._status_wrapper("Rendering centrality trajectories...")
             n_unique_nodes = len(node_metrics["node"].unique())
             centrality_fig = render_centrality_trajectories(
                 node_metrics,
@@ -190,10 +235,10 @@ class EvolutionWorker(QObject):
                 n_nodes=min(self.evolution_config.n_top_nodes, n_unique_nodes),
             )
 
-            self.status.emit("Rendering extended rolling metrics...")
+            self._status_wrapper("Rendering extended rolling metrics...")
             extended_metrics_fig = render_extended_metrics(network_metrics)
 
-            self.status.emit("Detecting communities per window...")
+            self._status_wrapper("Detecting communities per window...")
             try:
                 community_metrics = compute_community_metrics(
                     graphs,
@@ -201,14 +246,14 @@ class EvolutionWorker(QObject):
                     min_nodes=self.evolution_config.min_nodes,
                     community_method=self.evolution_config.community_method,
                     progress=self._progress_wrapper,
-                    status=self.status.emit,
+                    status=self._status_wrapper,
                 )
                 community_fig = render_community_heatmap(community_metrics)
             except ValueError as exc:
-                self.status.emit(f"Community detection skipped: {exc}")
+                self._status_wrapper(f"Community detection skipped: {exc}")
                 community_fig = render_community_heatmap(pl.DataFrame())
 
-            self.status.emit("Evolution analysis complete.")
+            self._status_wrapper("Evolution analysis complete.")
             self.progress.emit(1, 1, "done")
 
             result = EvolutionResult(
@@ -220,9 +265,19 @@ class EvolutionWorker(QObject):
             )
             self.finished.emit(result)
 
+        except WorkerCancelled:
+            self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"Evolution analysis failed: {str(exc)}")
 
     def _progress_wrapper(self, done: int, total: int, desc: str) -> None:
-        """Wrap progress callback."""
+        """Wrap progress callback; raises if cancellation was requested."""
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
         self.progress.emit(done, total, desc)
+
+    def _status_wrapper(self, msg: str) -> None:
+        """Wrap status callback; raises if cancellation was requested."""
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
+        self.status.emit(msg)

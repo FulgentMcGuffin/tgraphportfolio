@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 from datetime import date, datetime
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from PySide6.QtCore import QDate, QThread, QUrl, Qt
 from PySide6.QtGui import QColor, QPalette, QPixmap, QTextCursor
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -26,11 +29,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
     QSplitter,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -88,6 +93,11 @@ class MainWindow(QMainWindow):
         self._temp_html: Path | None = None
         self._last_progress_line: int | None = None
         self._busy = False
+        # Shared with PipelineWorker/EvolutionWorker: setting this raises inside
+        # their progress/status callbacks (checked on every pair/window) to unwind
+        # a long-running computation almost immediately, instead of the GUI thread
+        # blocking on QThread.wait() until the current computation finishes on its own.
+        self._cancel_event = threading.Event()
         # Session-scoped Polars memoization (in-memory SQLite via framecache).
         self._data_cache = GuiDataCache.create()
 
@@ -102,6 +112,7 @@ class MainWindow(QMainWindow):
 
         # Edge/connection measure settings
         from tgraphportfolio.gui.edge_settings_dialog import EdgeSettingsConfig
+
         self._edge_settings = EdgeSettingsConfig()
 
         root = QWidget()
@@ -125,7 +136,6 @@ class MainWindow(QMainWindow):
 
         self._set_controls_enabled(False)
         self.btn_browse.setEnabled(True)
-        self._on_filter_toggled(False)
 
         if not ACE_AVAILABLE:
             self._append_log(
@@ -196,18 +206,36 @@ class MainWindow(QMainWindow):
         self.cmb_value = QComboBox()
         form.addWidget(self.cmb_value)
 
-        form.addWidget(self._section("OPTIONAL FILTER"))
-        self.chk_filter = QCheckBox("Filter by column value")
-        self.chk_filter.toggled.connect(self._on_filter_toggled)
-        form.addWidget(self.chk_filter)
+        filter_body = self._collapsible_section(form, "OPTIONAL FILTER", collapsed=True)
+        self.radio_filter_column = QRadioButton("Column value")
+        self.radio_filter_where = QRadioButton("WHERE clause")
+        self.radio_filter_column.setChecked(True)
+        self.filter_mode_group = QButtonGroup(self)
+        self.filter_mode_group.addButton(self.radio_filter_column)
+        self.filter_mode_group.addButton(self.radio_filter_where)
+        self.radio_filter_column.toggled.connect(self._on_filter_mode_changed)
+        self.radio_filter_where.toggled.connect(self._on_filter_mode_changed)
+        filter_body.addWidget(self.radio_filter_column)
         self.cmb_filter_col = QComboBox()
         self.cmb_filter_col.currentTextChanged.connect(self._load_filter_values)
-        form.addWidget(self.cmb_filter_col)
+        filter_body.addWidget(self.cmb_filter_col)
         self.cmb_filter_val = QComboBox()
         self.cmb_filter_val.setEditable(True)
-        form.addWidget(self.cmb_filter_val)
+        filter_body.addWidget(self.cmb_filter_val)
+        filter_body.addWidget(self.radio_filter_where)
+        self.txt_filter_where = QLineEdit()
+        self.txt_filter_where.setPlaceholderText(
+            'e.g. "EqIndex" = \'DAX30\' AND "Close" > 0'
+        )
+        self.txt_filter_where.setToolTip(
+            "Raw SQL boolean expression inserted after WHERE in the load query."
+        )
+        filter_body.addWidget(self.txt_filter_where)
+        self._on_filter_mode_changed()
 
-        form.addWidget(self._section("TRANSFORMS (ORDERED)"))
+        transforms_body = self._collapsible_section(
+            form, "TRANSFORMS (ORDERED)", collapsed=True
+        )
         self.lst_transforms = QListWidget()
         for transform_id, label in available_transforms():
             item = QListWidgetItem(label)
@@ -221,7 +249,7 @@ class MainWindow(QMainWindow):
             item.setCheckState(Qt.CheckState.Checked)
             self.lst_transforms.addItem(item)
         self.lst_transforms.setMaximumHeight(56)
-        form.addWidget(self.lst_transforms)
+        transforms_body.addWidget(self.lst_transforms)
         tf_row = QHBoxLayout()
         tf_row.setSpacing(4)
         self.btn_tf_up = QPushButton("Up")
@@ -232,7 +260,7 @@ class MainWindow(QMainWindow):
         self.btn_tf_down.clicked.connect(lambda: self._move_transform(1))
         tf_row.addWidget(self.btn_tf_up)
         tf_row.addWidget(self.btn_tf_down)
-        form.addLayout(tf_row)
+        transforms_body.addLayout(tf_row)
 
         form.addWidget(self._section("CONNECTION MEASURE"))
         self.cmb_measure = QComboBox()
@@ -243,7 +271,9 @@ class MainWindow(QMainWindow):
         self.btn_edge_settings = QPushButton("⚙ Edge Settings")
         self.btn_edge_settings.setObjectName("SecondaryButton")
         self.btn_edge_settings.clicked.connect(self._show_edge_settings)
-        self.btn_edge_settings.setToolTip("Configure measure-specific parameters (e.g., stress regime quantile)")
+        self.btn_edge_settings.setToolTip(
+            "Configure measure-specific parameters (e.g., stress regime quantile)"
+        )
         form.addWidget(self.btn_edge_settings)
 
         form.addWidget(self._section("DATE RANGE"))
@@ -270,7 +300,9 @@ class MainWindow(QMainWindow):
         self.btn_evolution_settings = QPushButton("⚙ Evolution Settings")
         self.btn_evolution_settings.setObjectName("SecondaryButton")
         self.btn_evolution_settings.clicked.connect(self._show_evolution_settings)
-        self.btn_evolution_settings.setToolTip("Configure network evolution analysis parameters")
+        self.btn_evolution_settings.setToolTip(
+            "Configure network evolution analysis parameters"
+        )
         form.addWidget(self.btn_evolution_settings)
 
         form.addSpacing(8)
@@ -286,7 +318,9 @@ class MainWindow(QMainWindow):
         self.btn_cancel = QPushButton("✕ Cancel Render")
         self.btn_cancel.setObjectName("CancelButton")
         self.btn_cancel.clicked.connect(self._cancel_render)
-        self.btn_cancel.setToolTip("Cancel current analysis and clear all networks/graphs")
+        self.btn_cancel.setToolTip(
+            "Cancel current analysis and clear all networks/graphs"
+        )
         self.btn_cancel.setEnabled(False)
         form.addWidget(self.btn_cancel)
 
@@ -368,7 +402,9 @@ class MainWindow(QMainWindow):
         evolution_cent_layout = QVBoxLayout(evolution_cent_page)
         evolution_cent_layout.setContentsMargins(8, 8, 8, 8)
         self.evolution_centrality_container = QWidget()
-        self.evolution_centrality_layout = QVBoxLayout(self.evolution_centrality_container)
+        self.evolution_centrality_layout = QVBoxLayout(
+            self.evolution_centrality_container
+        )
         self.evolution_centrality_layout.setContentsMargins(0, 0, 0, 0)
         self.evolution_centrality_label = QLabel()
         self.evolution_centrality_label.setObjectName("HistLabel")
@@ -408,7 +444,9 @@ class MainWindow(QMainWindow):
         evolution_comm_layout = QVBoxLayout(evolution_comm_page)
         evolution_comm_layout.setContentsMargins(8, 8, 8, 8)
         self.evolution_community_container = QWidget()
-        self.evolution_community_layout = QVBoxLayout(self.evolution_community_container)
+        self.evolution_community_layout = QVBoxLayout(
+            self.evolution_community_container
+        )
         self.evolution_community_layout.setContentsMargins(0, 0, 0, 0)
         self.evolution_community_label = QLabel()
         self.evolution_community_label.setObjectName("HistLabel")
@@ -445,6 +483,36 @@ class MainWindow(QMainWindow):
         label = QLabel(text)
         label.setObjectName("SectionTitle")
         return label
+
+    def _collapsible_section(
+        self, parent: QVBoxLayout, title: str, *, collapsed: bool = True
+    ) -> QVBoxLayout:
+        """Add a disclosure header; return the inner layout (hidden if collapsed)."""
+        toggle = QToolButton()
+        toggle.setObjectName("CollapseHeader")
+        toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        toggle.setCheckable(True)
+        toggle.setAutoRaise(True)
+        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        body = QWidget()
+        body.setObjectName("CollapseBody")
+        inner = QVBoxLayout(body)
+        inner.setContentsMargins(0, 0, 0, 0)
+        inner.setSpacing(3)
+
+        def _sync(expanded: bool) -> None:
+            toggle.setText(f"{'▾' if expanded else '▸'}  {title}")
+            body.setVisible(expanded)
+
+        toggle.toggled.connect(_sync)
+        toggle.setChecked(not collapsed)
+        _sync(not collapsed)
+        parent.addWidget(toggle)
+        parent.addWidget(body)
+        return inner
 
     @staticmethod
     def _placeholder_html() -> str:
@@ -515,16 +583,24 @@ class MainWindow(QMainWindow):
         measure_name: str,
     ) -> None:
         """Create a threshold slider for dynamic degree histogram adjustment."""
-        from tgraphportfolio.analysis.degree_hist import histogram_title, render_degree_histogram
+        from tgraphportfolio.analysis.degree_hist import (
+            histogram_title,
+            render_degree_histogram,
+        )
         from tgraphportfolio.analysis.network import build_corr_nx
         import polars as pl
 
         # Determine slider range based on measure type
         # Measures normalized to [0, 1]
         normalized_measures = {
-            "distance_correlation", "kendall_tau", "dtw_distance",
-            "shrinkage_correlation", "conditional_correlation",
-            "mutual_information", "chatterjee_xi", "maximal_correlation"
+            "distance_correlation",
+            "kendall_tau",
+            "dtw_distance",
+            "shrinkage_correlation",
+            "conditional_correlation",
+            "mutual_information",
+            "chatterjee_xi",
+            "maximal_correlation",
         }
         if measure_name in normalized_measures:
             min_val, max_val = 0.0, 1.0
@@ -548,8 +624,7 @@ class MainWindow(QMainWindow):
         slider.setValue(int(self.spin_threshold.value() * 100))
         slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         slider.setTickInterval(1)  # Tick every 0.01
-        slider.setStyleSheet(
-            """
+        slider.setStyleSheet("""
             QSlider::groove:horizontal {
                 background: #334155;
                 height: 6px;
@@ -564,13 +639,14 @@ class MainWindow(QMainWindow):
             QSlider::handle:horizontal:hover {
                 background: #7dd3fc;
             }
-            """
-        )
+            """)
         slider_layout.addWidget(slider, 1)
 
         # Value display
         lbl_value = QLabel(f"{self.spin_threshold.value():.2f}")
-        lbl_value.setStyleSheet("color: #cbd5e1; font-size: 9px; min-width: 35px; text-align: right;")
+        lbl_value.setStyleSheet(
+            "color: #cbd5e1; font-size: 9px; min-width: 35px; text-align: right;"
+        )
         slider_layout.addWidget(lbl_value)
 
         slider_container.setLayout(slider_layout)
@@ -623,15 +699,28 @@ class MainWindow(QMainWindow):
                 )
 
                 ax.set_xlim(max(0, lo - 1), hi + 1)
-                ax.xaxis.set_major_locator(MaxNLocator(nbins=8, integer=True, prune=None))
+                ax.xaxis.set_major_locator(
+                    MaxNLocator(nbins=8, integer=True, prune=None)
+                )
                 ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
                 ax.minorticks_off()
 
-                ax.set_title(fig.axes[0].get_title(), color="#e2e8f0", fontsize=13, pad=10)
+                ax.set_title(
+                    fig.axes[0].get_title(), color="#e2e8f0", fontsize=13, pad=10
+                )
                 ax.set_xlabel("Number of Connections", color="#cbd5e1", fontsize=10)
                 ax.set_ylabel("Density", color="#cbd5e1", fontsize=10)
-                ax.tick_params(axis="both", which="major", colors="#cbd5e1", labelsize=10)
-                ax.grid(True, axis="both", which="major", color="#334155", linewidth=0.8, alpha=0.7)
+                ax.tick_params(
+                    axis="both", which="major", colors="#cbd5e1", labelsize=10
+                )
+                ax.grid(
+                    True,
+                    axis="both",
+                    which="major",
+                    color="#334155",
+                    linewidth=0.8,
+                    alpha=0.7,
+                )
                 ax.set_axisbelow(True)
 
                 for spine in ax.spines.values():
@@ -645,10 +734,15 @@ class MainWindow(QMainWindow):
 
                 # Re-add node label annotations for min/max/mode degrees
                 try:
-                    from tgraphportfolio.analysis.degree_hist import _annotate_extreme_nodes
+                    from tgraphportfolio.analysis.degree_hist import (
+                        _annotate_extreme_nodes,
+                    )
+
                     _annotate_extreme_nodes(ax, degrees_dict, lo, hi, bin_edges)
                 except Exception as e:
-                    self._append_log(f"Warning: Could not annotate extreme nodes: {str(e)}")
+                    self._append_log(
+                        f"Warning: Could not annotate extreme nodes: {str(e)}"
+                    )
 
                 # Update cursor data
                 fig._histogram_cursor_data = (ax, degrees_dict, bin_edges)
@@ -659,6 +753,7 @@ class MainWindow(QMainWindow):
                 # Re-attach cursor
                 try:
                     from tgraphportfolio.analysis.degree_hist import _HistogramCursor
+
                     ax, degrees, bin_edges_data = fig._histogram_cursor_data
                     cursor = _HistogramCursor(ax, degrees, bin_edges_data, canvas)
                     canvas._cursor = cursor
@@ -679,7 +774,7 @@ class MainWindow(QMainWindow):
                 widget = self.hist_canvas_layout.takeAt(0).widget()
                 if isinstance(widget, FigureCanvas) and widget.figure:
                     plt.close(widget.figure)
-                if hasattr(widget, 'deleteLater'):
+                if hasattr(widget, "deleteLater"):
                     widget.deleteLater()
 
             # Create and add canvas directly (maintains original size)
@@ -689,18 +784,28 @@ class MainWindow(QMainWindow):
             canvas.draw()
 
             # Add threshold slider if measure_df is available
-            if hasattr(fig, "_measure_df_stored") and fig._measure_df_stored is not None:
+            if (
+                hasattr(fig, "_measure_df_stored")
+                and fig._measure_df_stored is not None
+            ):
                 self._create_threshold_slider(
-                    self.hist_canvas_layout, fig, canvas, fig._measure_df_stored, fig._measure_name
+                    self.hist_canvas_layout,
+                    fig,
+                    canvas,
+                    fig._measure_df_stored,
+                    fig._measure_name,
                 )
 
             # Attach cursor if data is available (store reference to prevent garbage collection)
             if hasattr(fig, "_histogram_cursor_data"):
                 try:
                     from tgraphportfolio.analysis.degree_hist import _HistogramCursor
+
                     ax, degrees, bin_edges = fig._histogram_cursor_data
                     cursor = _HistogramCursor(ax, degrees, bin_edges, canvas)
-                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                    canvas._cursor = (
+                        cursor  # Keep reference to prevent garbage collection
+                    )
                 except Exception as e:
                     self._append_log(f"Cursor error (histogram): {str(e)}")
         except Exception as e:
@@ -761,7 +866,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Schema error", str(exc))
             return
 
-        for combo in (self.cmb_date, self.cmb_name, self.cmb_value, self.cmb_filter_col):
+        for combo in (
+            self.cmb_date,
+            self.cmb_name,
+            self.cmb_value,
+            self.cmb_filter_col,
+        ):
             combo.blockSignals(True)
             combo.clear()
             combo.addItems(columns)
@@ -776,7 +886,9 @@ class MainWindow(QMainWindow):
     def _guess_roles(self, columns: list[str]) -> None:
         lower = {c.lower(): c for c in columns}
 
-        def pick(candidates: list[str], combo: QComboBox, fallback_idx: int = 0) -> None:
+        def pick(
+            candidates: list[str], combo: QComboBox, fallback_idx: int = 0
+        ) -> None:
             for name in candidates:
                 if name in lower:
                     combo.setCurrentText(lower[name])
@@ -789,14 +901,19 @@ class MainWindow(QMainWindow):
         pick(["close", "adj_close", "price", "value"], self.cmb_value)
         pick(["eqindex", "index_name", "universe"], self.cmb_filter_col)
 
-    def _on_filter_toggled(self, enabled: bool) -> None:
-        self.cmb_filter_col.setEnabled(enabled)
-        self.cmb_filter_val.setEnabled(enabled)
-        if enabled:
+    def _on_filter_mode_changed(self, *_args) -> None:
+        """Enable the active filter mode's widget(s), disable the other's."""
+        is_where = self.radio_filter_where.isChecked()
+        self.cmb_filter_col.setEnabled(not is_where)
+        self.cmb_filter_val.setEnabled(not is_where)
+        self.txt_filter_where.setEnabled(is_where)
+        if is_where:
+            self.txt_filter_where.setFocus()
+        else:
             self._load_filter_values(self.cmb_filter_col.currentText())
 
     def _load_filter_values(self, column: str) -> None:
-        if not self._db_path or not column or not self.chk_filter.isChecked():
+        if not self._db_path or not column or not self.radio_filter_column.isChecked():
             return
         table = self.cmb_table.currentText()
         if not table:
@@ -852,7 +969,8 @@ class MainWindow(QMainWindow):
             self.cmb_date,
             self.cmb_name,
             self.cmb_value,
-            self.chk_filter,
+            self.radio_filter_column,
+            self.radio_filter_where,
             self.lst_transforms,
             self.btn_tf_up,
             self.btn_tf_down,
@@ -864,8 +982,11 @@ class MainWindow(QMainWindow):
             self.btn_run,
         ):
             widget.setEnabled(enabled)
-        self.cmb_filter_col.setEnabled(enabled and self.chk_filter.isChecked())
-        self.cmb_filter_val.setEnabled(enabled and self.chk_filter.isChecked())
+        self.cmb_filter_col.setEnabled(enabled and self.radio_filter_column.isChecked())
+        self.cmb_filter_val.setEnabled(enabled and self.radio_filter_column.isChecked())
+        self.txt_filter_where.setEnabled(
+            enabled and self.radio_filter_where.isChecked()
+        )
         # Run only makes sense once a DB is loaded.
         if enabled and self._db_path is None:
             self.btn_run.setEnabled(False)
@@ -888,11 +1009,17 @@ class MainWindow(QMainWindow):
         if self._db_path is None:
             raise ValueError("No database selected.")
 
+        filter_mode = (
+            "where_clause" if self.radio_filter_where.isChecked() else "column_value"
+        )
         filter_column = None
         filter_value = None
-        if self.chk_filter.isChecked():
+        where_clause = None
+        if filter_mode == "column_value":
             filter_column = self.cmb_filter_col.currentText() or None
             filter_value = self.cmb_filter_val.currentText() or None
+        else:
+            where_clause = self.txt_filter_where.text().strip() or None
 
         start = self.date_start.date().toPython()
         end = self.date_end.date().toPython()
@@ -909,8 +1036,10 @@ class MainWindow(QMainWindow):
             date_column=self.cmb_date.currentText(),
             name_column=self.cmb_name.currentText(),
             value_column=value_col,
+            filter_mode=filter_mode,
             filter_column=filter_column,
             filter_value=filter_value,
+            where_clause=where_clause,
             transforms=self._selected_transforms(),
             measure=measure_id,
             date_start=start,
@@ -927,6 +1056,10 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Invalid settings", str(exc))
             return
+
+        # New run: clear any cancellation requested by a previous run so this
+        # one isn't stillborn (checked inside the worker's progress/status callbacks).
+        self._cancel_event.clear()
 
         self._set_busy(True)
         self.progress.setValue(0)
@@ -948,6 +1081,7 @@ class MainWindow(QMainWindow):
             config,
             data_cache=self._data_cache,
             edge_settings=self._edge_settings.to_dict(),
+            cancel_event=self._cancel_event,
         )
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
@@ -955,8 +1089,10 @@ class MainWindow(QMainWindow):
         self._worker.status.connect(self._on_status)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
+        self._worker.cancelled.connect(self._on_cancelled)
         self._worker.finished.connect(self._worker_thread.quit)
         self._worker.failed.connect(self._worker_thread.quit)
+        self._worker.cancelled.connect(self._worker_thread.quit)
         self._worker_thread.start()
 
     def _on_status(self, message: str) -> None:
@@ -1031,6 +1167,17 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         QMessageBox.critical(self, "Pipeline failed", message)
 
+    def _on_cancelled(self) -> None:
+        """Pipeline worker unwound after a cancellation request.
+
+        ``_cancel_render`` already performs the full UI cleanup; this handler
+        only needs to drop the worker refs. It may fire slightly after
+        ``_cancel_render`` returns (the signal is queued cross-thread), so it
+        must be safe to run on an already-cleaned-up UI — no popups here,
+        unlike ``_on_failed``.
+        """
+        self._cleanup_worker()
+
     # ============================================================================
     # Evolution Analysis Methods
     # ============================================================================
@@ -1046,7 +1193,9 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         # Add placeholder label
-        text = message or "Evolution metrics will appear here after you build a network."
+        text = (
+            message or "Evolution metrics will appear here after you build a network."
+        )
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
@@ -1064,7 +1213,9 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         # Add placeholder label
-        text = message or "Evolution metrics will appear here after you build a network."
+        text = (
+            message or "Evolution metrics will appear here after you build a network."
+        )
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
@@ -1082,7 +1233,9 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         # Add placeholder label
-        text = message or "Evolution metrics will appear here after you build a network."
+        text = (
+            message or "Evolution metrics will appear here after you build a network."
+        )
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
@@ -1100,7 +1253,9 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         # Add placeholder label
-        text = message or "Evolution metrics will appear here after you build a network."
+        text = (
+            message or "Evolution metrics will appear here after you build a network."
+        )
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
@@ -1135,9 +1290,14 @@ class MainWindow(QMainWindow):
             if hasattr(fig, "_heatmap_cursor_data"):
                 try:
                     from tgraphportfolio.analysis.evolution_viz import _HeatmapCursor
+
                     ax, matrix, nodes, window_ends_sorted = fig._heatmap_cursor_data
-                    cursor = _HeatmapCursor(ax, matrix, nodes, window_ends_sorted, canvas)
-                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                    cursor = _HeatmapCursor(
+                        ax, matrix, nodes, window_ends_sorted, canvas
+                    )
+                    canvas._cursor = (
+                        cursor  # Keep reference to prevent garbage collection
+                    )
                 except Exception as e:
                     self._append_log(f"Cursor error (heatmap): {str(e)}")
         except Exception as e:
@@ -1164,19 +1324,31 @@ class MainWindow(QMainWindow):
             if hasattr(fig, "_line_cursor_data"):
                 try:
                     from tgraphportfolio.analysis.evolution_viz import _LineCursor
+
                     # _line_cursor_data is now a dict mapping ax -> (ax, line_data, line_objects, original_styles)
                     cursor_data = fig._line_cursor_data
                     if isinstance(cursor_data, dict):
                         # Multiple axes (top/bottom plots)
                         cursors = []
-                        for ax, (ax_obj, line_data, line_objects, original_styles) in cursor_data.items():
-                            cursor = _LineCursor(ax_obj, line_data, canvas, line_objects, original_styles)
+                        for ax, (
+                            ax_obj,
+                            line_data,
+                            line_objects,
+                            original_styles,
+                        ) in cursor_data.items():
+                            cursor = _LineCursor(
+                                ax_obj, line_data, canvas, line_objects, original_styles
+                            )
                             cursors.append(cursor)
-                        canvas._cursors = cursors  # Keep reference to prevent garbage collection
+                        canvas._cursors = (
+                            cursors  # Keep reference to prevent garbage collection
+                        )
                     else:
                         # Legacy: single axis (shouldn't happen with new code, but handle gracefully)
                         ax, line_data, line_objects, original_styles = cursor_data
-                        cursor = _LineCursor(ax, line_data, canvas, line_objects, original_styles)
+                        cursor = _LineCursor(
+                            ax, line_data, canvas, line_objects, original_styles
+                        )
                         canvas._cursor = cursor
                 except Exception as e:
                     self._append_log(f"Cursor error (centrality): {str(e)}")
@@ -1204,9 +1376,12 @@ class MainWindow(QMainWindow):
             if hasattr(fig, "_extended_cursor_data"):
                 try:
                     from tgraphportfolio.analysis.evolution_viz import _MultiPanelCursor
+
                     panels = fig._extended_cursor_data
                     cursor = _MultiPanelCursor(panels, canvas)
-                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                    canvas._cursor = (
+                        cursor  # Keep reference to prevent garbage collection
+                    )
                 except Exception as e:
                     self._append_log(f"Cursor error (extended metrics): {str(e)}")
         except Exception as e:
@@ -1232,10 +1407,17 @@ class MainWindow(QMainWindow):
             # Attach cursor if data is available (store reference to prevent garbage collection)
             if hasattr(fig, "_community_cursor_data"):
                 try:
-                    from tgraphportfolio.analysis.evolution_viz import _CommunityHeatmapCursor
+                    from tgraphportfolio.analysis.evolution_viz import (
+                        _CommunityHeatmapCursor,
+                    )
+
                     ax, matrix, nodes, window_ends = fig._community_cursor_data
-                    cursor = _CommunityHeatmapCursor(ax, matrix, nodes, window_ends, canvas)
-                    canvas._cursor = cursor  # Keep reference to prevent garbage collection
+                    cursor = _CommunityHeatmapCursor(
+                        ax, matrix, nodes, window_ends, canvas
+                    )
+                    canvas._cursor = (
+                        cursor  # Keep reference to prevent garbage collection
+                    )
                 except Exception as e:
                     self._append_log(f"Cursor error (communities): {str(e)}")
         except Exception as e:
@@ -1276,39 +1458,57 @@ class MainWindow(QMainWindow):
             )
 
     def _cancel_render(self) -> None:
-        """Cancel current analysis and clear all visualizations."""
-        self._append_log("Cancelling render...")
+        """Cancel current analysis and clear all visualizations.
 
-        # Stop pipeline worker
+        Setting ``_cancel_event`` first is what makes this non-blocking: it's
+        checked inside the worker's progress/status callbacks (invoked on
+        every pair/window), so the worker unwinds within one iteration rather
+        than running to completion. ``QThread.quit()`` alone cannot interrupt
+        a synchronous computation already in progress — it only requests the
+        thread's event loop to exit once control returns to it.
+        """
+        self._append_log("Cancelling render...")
+        self._cancel_event.set()
+
+        # Stop pipeline worker (bounded wait: the cancellation flag above
+        # should make this return almost immediately, not hang indefinitely).
         if self._worker_thread and self._worker_thread.isRunning():
             self._worker_thread.quit()
-            self._worker_thread.wait()
-            self._append_log("Pipeline cancelled.")
+            if not self._worker_thread.wait(2000):
+                self._append_log("WARNING: pipeline worker did not stop within 2s.")
+            else:
+                self._append_log("Pipeline cancelled.")
 
         # Stop evolution worker
         if self._evolution_worker_thread and self._evolution_worker_thread.isRunning():
             self._evolution_worker_thread.quit()
-            self._evolution_worker_thread.wait()
-            self._append_log("Evolution analysis cancelled.")
+            if not self._evolution_worker_thread.wait(2000):
+                self._append_log("WARNING: evolution worker did not stop within 2s.")
+            else:
+                self._append_log("Evolution analysis cancelled.")
+
+        self._cleanup_worker()
+        self._evolution_worker = None
+        self._evolution_worker_thread = None
 
         # Clear all visualizations
         # Clear network canvas
-        self.web_view.setHtml("")
+        self.web.setHtml(self._placeholder_html())
 
         # Clear histogram canvas
         while self.hist_canvas_layout.count():
             widget = self.hist_canvas_layout.takeAt(0).widget()
-            if hasattr(widget, 'figure') and widget.figure:
+            if hasattr(widget, "figure") and widget.figure:
                 plt.close(widget.figure)
-            if hasattr(widget, 'deleteLater'):
+            if hasattr(widget, "deleteLater"):
                 widget.deleteLater()
 
         # Clear tabs
-        if hasattr(self, 'tabs_evolution'):
+        if hasattr(self, "tabs_evolution"):
             for i in range(self.tabs_evolution.count()):
                 tab = self.tabs_evolution.widget(i)
-                if hasattr(tab, 'canvas') and tab.canvas:
-                    if hasattr(tab.canvas, 'figure'):
+                if hasattr(tab, "canvas") and tab.canvas:
+                    if hasattr(tab.canvas, "figure"):
                         plt.close(tab.canvas.figure)
 
         # Reset UI
@@ -1328,7 +1528,9 @@ class MainWindow(QMainWindow):
         self._append_log("Starting evolution analysis...")
 
         # Ensure config has current threshold from GUI
-        self._evolution_config.independent_threshold = float(self.spin_threshold.value())
+        self._evolution_config.independent_threshold = float(
+            self.spin_threshold.value()
+        )
 
         self._evolution_worker_thread = QThread(self)
         self._evolution_worker = EvolutionWorker(
@@ -1336,6 +1538,7 @@ class MainWindow(QMainWindow):
             self._cached_dates,
             self._evolution_config,
             data_cache=self._data_cache,
+            cancel_event=self._cancel_event,
         )
         self._evolution_worker.moveToThread(self._evolution_worker_thread)
         self._evolution_worker_thread.started.connect(self._evolution_worker.run)
@@ -1343,8 +1546,10 @@ class MainWindow(QMainWindow):
         self._evolution_worker.status.connect(self._on_evolution_status)
         self._evolution_worker.finished.connect(self._on_evolution_finished)
         self._evolution_worker.failed.connect(self._on_evolution_failed)
+        self._evolution_worker.cancelled.connect(self._on_evolution_cancelled)
         self._evolution_worker.finished.connect(self._evolution_worker_thread.quit)
         self._evolution_worker.failed.connect(self._evolution_worker_thread.quit)
+        self._evolution_worker.cancelled.connect(self._evolution_worker_thread.quit)
         self._evolution_worker_thread.start()
 
     def _on_evolution_progress(self, done: int, total: int, desc: str) -> None:
@@ -1363,7 +1568,9 @@ class MainWindow(QMainWindow):
     def _on_evolution_finished(self, result: object) -> None:
         """Handle evolution completion."""
         if not isinstance(result, EvolutionResult):
-            self._on_evolution_failed(f"Unexpected evolution result type: {type(result)!r}")
+            self._on_evolution_failed(
+                f"Unexpected evolution result type: {type(result)!r}"
+            )
             return
 
         self._append_log("Evolution metrics rendered.")
@@ -1388,10 +1595,29 @@ class MainWindow(QMainWindow):
         self._evolution_worker_thread = None
         self._set_busy(False)
 
+    def _on_evolution_cancelled(self) -> None:
+        """Evolution worker unwound after a cancellation request.
+
+        ``_cancel_render`` already performs the full UI cleanup; this handler
+        only needs to drop the worker refs (see ``_on_cancelled`` for why no
+        popup/UI work happens here).
+        """
+        self._evolution_worker = None
+        self._evolution_worker_thread = None
+
     def closeEvent(self, event) -> None:  # noqa: N802
+        # Same fix as _cancel_render: set the flag before quit()/wait() so a
+        # worker mid-computation unwinds instead of the 2s wait timing out.
+        self._cancel_event.set()
         if self._worker_thread is not None and self._worker_thread.isRunning():
             self._worker_thread.quit()
             self._worker_thread.wait(2000)
+        if (
+            self._evolution_worker_thread is not None
+            and self._evolution_worker_thread.isRunning()
+        ):
+            self._evolution_worker_thread.quit()
+            self._evolution_worker_thread.wait(2000)
         if self._temp_html and self._temp_html.exists():
             try:
                 self._temp_html.unlink()

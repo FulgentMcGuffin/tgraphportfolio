@@ -39,14 +39,22 @@ def load_table(
     db_path: Path | str,
     table: str,
     columns: list[str] | None = None,
+    where_clause: str | None = None,
 ) -> pl.DataFrame:
-    """Load selected columns from ``table`` (all columns if ``columns`` is None)."""
+    """Load selected columns from ``table`` (all columns if ``columns`` is None).
+
+    ``where_clause`` is raw user-authored SQL inserted verbatim after ``WHERE``
+    (e.g. from the GUI's "WHERE clause" filter mode) — not parameterized, same
+    trust model as the rest of this module's f-string SQL for this local tool.
+    """
     with open_backend(db_path) as db:
         if columns:
             quoted = ", ".join(f'"{c}"' for c in columns)
             sql = f'SELECT {quoted} FROM "{table}"'
         else:
             sql = f'SELECT * FROM "{table}"'
+        if where_clause:
+            sql += f" WHERE {where_clause}"
         return db.run_query(sql)
 
 
@@ -61,7 +69,7 @@ def distinct_values(
         sql = (
             f'SELECT DISTINCT "{column}" AS v FROM "{table}" '
             f'WHERE "{column}" IS NOT NULL '
-            f'ORDER BY v LIMIT {int(limit)}'
+            f"ORDER BY v LIMIT {int(limit)}"
         )
         frame = db.run_query(sql)
         if frame.is_empty():
@@ -76,10 +84,7 @@ def column_date_bounds(
 ) -> tuple[date | None, date | None]:
     """Return ``(min_date, max_date)`` for a date/datetime column."""
     with open_backend(db_path) as db:
-        sql = (
-            f'SELECT MIN("{column}") AS lo, MAX("{column}") AS hi '
-            f'FROM "{table}"'
-        )
+        sql = f'SELECT MIN("{column}") AS lo, MAX("{column}") AS hi ' f'FROM "{table}"'
         frame = db.run_query(sql)
         if frame.is_empty():
             return None, None

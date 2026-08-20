@@ -61,6 +61,23 @@ QLabel#SectionTitle {{
     padding-top: 4px;
     padding-bottom: 0px;
 }}
+QToolButton#CollapseHeader {{
+    color: {TEXT_MUTED};
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    padding: 4px 0 0 0;
+    background-color: transparent;
+    border: none;
+    text-align: left;
+}}
+QToolButton#CollapseHeader:hover {{
+    color: {TEXT};
+}}
+QWidget#CollapseBody {{
+    background-color: transparent;
+    border: none;
+}}
 QLabel#DbPath, QLabel#StatusLabel {{
     color: {TEXT_MUTED};
     font-size: 11px;
@@ -88,6 +105,26 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background-color: {ACCENT};
     border-color: {BORDER};
+}}
+
+QRadioButton {{
+    background-color: transparent;
+    color: {TEXT};
+    spacing: 6px;
+}}
+QRadioButton::indicator {{
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    border: 1px solid {BORDER};
+    background-color: {BG_CONTROL};
+}}
+QRadioButton::indicator:checked {{
+    background-color: {ACCENT};
+    border-color: {BORDER};
+}}
+QRadioButton:disabled {{
+    color: {TEXT_MUTED};
 }}
 
 QComboBox, QLineEdit, QDateEdit, QDoubleSpinBox, QListWidget {{

@@ -195,3 +195,10 @@ cython_debug/
 
 src/tgraphportfolio/multilayer_edge_types.png
 src/tgraphportfolio/multilayer_evolution.png
+src/tgraphportfolio/factor_evolution.png
+src/tgraphportfolio/multilayer_3d_network.png
+src/tgraphportfolio/multilayer_betweenness_eigenvector.png
+src/tgraphportfolio/multilayer_betweenness.png
+src/tgraphportfolio/multilayer_community.png
+src/tgraphportfolio/multilayer_eigenvector.png
+src/tgraphportfolio/stress_detection.png

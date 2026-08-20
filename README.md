@@ -40,7 +40,7 @@ uv run tgraph-gui
 
 In the GUI, point the sidebar at a DuckDB or SQLite database, choose columns / filters, then click **Build Network**.
 
-| Correlation network | Degree distribution |
+| Linked network | Degree distribution |
 |:---:|:---:|
 | ![Distance correlation network for DAX closing price returns](rsrc/images/dax_dcor.png) | ![Degree distribution for CAC closing price returns](rsrc/images/cac_degrees.png) |
 

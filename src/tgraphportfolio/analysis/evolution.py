@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
-from graspologic.cluster import KMeansCluster
 from graspologic.embed import AdjacencySpectralEmbed
 import networkx as nx
 import numpy as np
 import polars as pl
+from sklearn.cluster import KMeans
 from sklearn.metrics import (
     calinski_harabasz_score,
     davies_bouldin_score,
@@ -175,15 +175,15 @@ def _extended_network_summary(graph: nx.Graph) -> dict:
     largest_cc = max(nx.connected_components(graph), key=len, default=set())
     if len(largest_cc) >= 2:
         subgraph = graph.subgraph(largest_cc)
-        result["giant_component_avg_shortest_path"] = nx.average_shortest_path_length(subgraph)
+        result["giant_component_avg_shortest_path"] = nx.average_shortest_path_length(
+            subgraph
+        )
     else:
         result["giant_component_avg_shortest_path"] = float("nan")
     return result
 
 
-def _node_summary(
-    graph: nx.Graph, window_end: date, *, centrality: str
-) -> list[dict]:
+def _node_summary(graph: nx.Graph, window_end: date, *, centrality: str) -> list[dict]:
     """Long-format per-node metric rows."""
     cent = _node_centrality(graph, centrality)
     weighted_degree = dict(graph.degree(weight="strength"))
@@ -267,9 +267,7 @@ def compute_evolution_metrics(
         window_df = df_returns.filter(
             pl.col(date_column).is_between(window_start, window_end)
         )
-        wide = network.pivot_to_wide(
-            window_df, date_column, name_column, value_column
-        )
+        wide = network.pivot_to_wide(window_df, date_column, name_column, value_column)
         nodes = [c for c in wide.columns if c != date_column]
         nodes = [n for n in nodes if wide.get_column(n).drop_nulls().len() >= 3]
 
@@ -284,9 +282,7 @@ def compute_evolution_metrics(
         )
         graph = _drop_nan_edges(graph)
         _add_strength_attr(graph)
-        node_rows.extend(
-            _node_summary(graph, window_end, centrality=cfg.centrality)
-        )
+        node_rows.extend(_node_summary(graph, window_end, centrality=cfg.centrality))
         network_row = _network_summary(graph, window_start, window_end)
         network_row.update(_extended_network_summary(graph))
         network_rows.append(network_row)
@@ -346,6 +342,27 @@ def build_adjacency_tensor(
     return window_ends, common_nodes, tensor
 
 
+def _kmeans_labels(
+    embedding: np.ndarray,
+    n_clusters: int,
+    random_state: int = 0,
+) -> np.ndarray:
+    """Cluster ASE coordinates with a hard k (sklearn KMeans).
+
+    Args:
+        embedding: (n, d) latent positions.
+        n_clusters: Requested community count; clipped to ``[2, n]``.
+        random_state: Seed for reproducibility.
+
+    Returns:
+        Integer label per row of ``embedding``.
+    """
+    k = max(2, min(int(n_clusters), len(embedding)))
+    return KMeans(n_clusters=k, n_init=10, random_state=random_state).fit_predict(
+        embedding
+    )
+
+
 def _optimal_k_silhouette(
     embedding: np.ndarray,
     max_clusters: int,
@@ -364,8 +381,7 @@ def _optimal_k_silhouette(
     best_k = 2
     best_score = -1.0
     for k in range(2, min(max_clusters + 1, len(embedding))):
-        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        labels = _kmeans_labels(embedding, k, random_state)
         if len(np.unique(labels)) < 2:
             continue
         score = silhouette_score(embedding, labels)
@@ -396,8 +412,7 @@ def _optimal_k_modularity(
     best_k = 2
     best_mod = -1.0
     for k in range(2, min(max_clusters + 1, len(embedding))):
-        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        labels = _kmeans_labels(embedding, k, random_state)
         if len(np.unique(labels)) < 2:
             continue
         # Convert labels to partition of node lists
@@ -437,8 +452,7 @@ def _optimal_k_davies_bouldin(
     best_k = 2
     best_score = float("inf")
     for k in range(2, min(max_clusters + 1, len(embedding))):
-        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        labels = _kmeans_labels(embedding, k, random_state)
         if len(np.unique(labels)) < 2:
             continue
         score = davies_bouldin_score(embedding, labels)
@@ -468,8 +482,7 @@ def _optimal_k_calinski_harabasz(
     best_k = 2
     best_score = -1.0
     for k in range(2, min(max_clusters + 1, len(embedding))):
-        kmeans = KMeansCluster(max_clusters=k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        labels = _kmeans_labels(embedding, k, random_state)
         if len(np.unique(labels)) < 2:
             continue
         score = calinski_harabasz_score(embedding, labels)
@@ -512,30 +525,31 @@ def compute_window_communities(
     embedding = AdjacencySpectralEmbed(
         n_components=ase_n_components, check_lcc=False
     ).fit_transform(adjacency)
+    if isinstance(embedding, tuple):
+        embedding = np.hstack(embedding)
 
     if method == CommunityMethod.FIXED:
-        kmeans = KMeansCluster(max_clusters=max_clusters, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
-        # Graspologic doesn't expose the silhouette score it uses internally,
-        # so return a placeholder score for consistency
-        selected_k = len(np.unique(labels))
-        score = -1.0
+        labels = _kmeans_labels(embedding, max_clusters, random_state)
+        selected_k = int(len(np.unique(labels)))
+        score = float(silhouette_score(embedding, labels)) if selected_k >= 2 else -1.0
     elif method == CommunityMethod.SILHOUETTE:
         selected_k, score = _optimal_k_silhouette(embedding, max_clusters, random_state)
-        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        labels = _kmeans_labels(embedding, selected_k, random_state)
     elif method == CommunityMethod.MODULARITY:
-        selected_k, score = _optimal_k_modularity(adjacency, embedding, max_clusters, random_state)
-        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        selected_k, score = _optimal_k_modularity(
+            adjacency, embedding, max_clusters, random_state
+        )
+        labels = _kmeans_labels(embedding, selected_k, random_state)
     elif method == CommunityMethod.DAVIES_BOULDIN:
-        selected_k, score = _optimal_k_davies_bouldin(embedding, max_clusters, random_state)
-        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        selected_k, score = _optimal_k_davies_bouldin(
+            embedding, max_clusters, random_state
+        )
+        labels = _kmeans_labels(embedding, selected_k, random_state)
     elif method == CommunityMethod.CALINSKI_HARABASZ:
-        selected_k, score = _optimal_k_calinski_harabasz(embedding, max_clusters, random_state)
-        kmeans = KMeansCluster(max_clusters=selected_k, random_state=random_state)
-        labels = kmeans.fit_predict(embedding)
+        selected_k, score = _optimal_k_calinski_harabasz(
+            embedding, max_clusters, random_state
+        )
+        labels = _kmeans_labels(embedding, selected_k, random_state)
     else:
         raise ValueError(f"Unknown community method: {method}")
 
@@ -577,7 +591,9 @@ def compute_community_metrics(
     """
     if status is not None:
         status("Building common-node adjacency tensor...")
-    window_ends, common_nodes, tensor = build_adjacency_tensor(graphs, min_nodes=min_nodes)
+    window_ends, common_nodes, tensor = build_adjacency_tensor(
+        graphs, min_nodes=min_nodes
+    )
 
     n_windows = len(window_ends)
     rows = []

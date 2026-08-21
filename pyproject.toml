@@ -21,6 +21,7 @@ dependencies = [
     "numba>=0.66",
     "numpy>=2.5.2",
     "pandas>=3.0.5",
+    "plotly>=7.0.0rc0",
     "plotnine>=0.15.7",
     "polars>=1.43.2",
     "py3plex",

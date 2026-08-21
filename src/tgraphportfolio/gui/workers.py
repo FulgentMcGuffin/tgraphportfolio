@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from matplotlib.figure import Figure
+import networkx as nx
 from PySide6.QtCore import QObject, Signal, Slot
 import polars as pl
 
@@ -23,6 +24,22 @@ from tgraphportfolio.analysis.evolution_viz import (
     render_community_heatmap,
 )
 from tgraphportfolio.analysis.gui_cache import GuiDataCache
+from tgraphportfolio.analysis.mln import (
+    MLNConfig,
+    build_layer_graphs,
+    build_multilayer_network,
+    count_edge_types,
+    layer_centrality_matrix,
+    layer_community_matrix,
+    layer_edge_metrics,
+    layer_values_of,
+    prepare_mln_frame,
+)
+from tgraphportfolio.analysis.mln_viz import (
+    render_mln_communities,
+    render_mln_metrics,
+)
+from tgraphportfolio.analysis.multiplex_data import multiplex_tables
 from tgraphportfolio.analysis.pipeline import PipelineResult, run_pipeline
 
 
@@ -46,6 +63,28 @@ class EvolutionResult:
     heatmap_fig: Figure
     centrality_fig: Figure
     extended_metrics_fig: Figure
+    community_fig: Figure
+
+
+@dataclass
+class MLNResult:
+    """Artifacts produced by multi-layer network analysis.
+
+    The multiplex tables are carried through so the GUI can re-render the 3D
+    view for a different layer selection without recomputing anything.
+    """
+
+    graph: nx.Graph
+    nodes: pl.DataFrame
+    intra: pl.DataFrame
+    inter: pl.DataFrame
+    layer_values: list[str]
+    layer_column: str
+    node_column: str
+    centrality: str
+    n_intra_edges: int
+    n_inter_edges: int
+    metrics_fig: Figure
     community_fig: Figure
 
 
@@ -269,6 +308,153 @@ class EvolutionWorker(QObject):
             self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"Evolution analysis failed: {str(exc)}")
+
+    def _progress_wrapper(self, done: int, total: int, desc: str) -> None:
+        """Wrap progress callback; raises if cancellation was requested."""
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
+        self.progress.emit(done, total, desc)
+
+    def _status_wrapper(self, msg: str) -> None:
+        """Wrap status callback; raises if cancellation was requested."""
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
+        self.status.emit(msg)
+
+
+class MLNWorker(QObject):
+    """Background worker for multi-layer network analysis.
+
+    Runs between the pipeline and evolution stages. Every status line is
+    prefixed ``"MLN: "`` so its log output stays distinguishable from the
+    evolution worker's.
+    """
+
+    progress = Signal(int, int, str)  # done, total, description
+    status = Signal(str)
+    finished = Signal(object)  # MLNResult
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        config: PipelineConfig,
+        mln_config: MLNConfig,
+        edge_settings: dict | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        super().__init__()
+        self._config = config
+        self._mln_config = mln_config
+        self._edge_settings = edge_settings or {}
+        self._cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            cfg = self._config
+            mcfg = self._mln_config
+            layer_column = mcfg.layer_column
+
+            self._status_wrapper(f"MLN: loading data for layer column {layer_column!r}")
+            df = prepare_mln_frame(cfg, layer_column, status=self._status_wrapper)
+            if df.is_empty():
+                self.failed.emit(
+                    "No rows remain after filtering / date range for the MLN."
+                )
+                return
+
+            values = layer_values_of(df, layer_column)
+            if len(values) < 2:
+                self.failed.emit(
+                    f"Column {layer_column!r} has {len(values)} distinct value(s) "
+                    "after filtering -- at least 2 are needed for a multi-layer network."
+                )
+                return
+            self._status_wrapper(f"MLN: {len(values)} layers -- {', '.join(values)}")
+            if len(values) > 12:
+                self._status_wrapper(
+                    f"MLN: {len(values)} layers is a lot; each is an O(n^2) "
+                    f"{cfg.measure} computation, so this may take a while."
+                )
+
+            layer_graphs = build_layer_graphs(
+                df,
+                cfg,
+                layer_column,
+                layer_values=values,
+                progress=self._progress_wrapper,
+                status=self._status_wrapper,
+                edge_settings=self._edge_settings,
+            )
+
+            self._status_wrapper("MLN: assembling multiplex network")
+            graph = build_multilayer_network(layer_graphs, values)
+            n_intra, n_inter = count_edge_types(graph)
+            self._status_wrapper(
+                f"MLN: multiplex has {graph.number_of_nodes()} nodes, "
+                f"{n_intra} intra-layer and {n_inter} inter-layer edges."
+            )
+            if n_inter == 0:
+                # A data property, not a failure: no node appears in >1 layer.
+                self._status_wrapper(
+                    "MLN: no node appears in more than one layer -- the multiplex "
+                    "has no inter-layer edges."
+                )
+
+            nodes, intra, inter = multiplex_tables(graph)
+
+            self._status_wrapper("MLN: computing per-layer edge metrics")
+            edge_df = layer_edge_metrics(graph, values)
+
+            self._status_wrapper(f"MLN: computing {mcfg.centrality} centrality")
+            centrality_df = layer_centrality_matrix(
+                layer_graphs, values, mcfg.centrality
+            )
+
+            self._status_wrapper(
+                f"MLN: detecting communities ({mcfg.community_method.value}, "
+                f"Jaccard >= {mcfg.jaccard_threshold:.2f})"
+            )
+            community_df = layer_community_matrix(layer_graphs, values, mcfg)
+
+            self._status_wrapper("MLN: rendering metrics")
+            metrics_fig = render_mln_metrics(
+                edge_df,
+                centrality_df,
+                layer_label=layer_column,
+                node_label=cfg.name_column,
+                centrality_name=mcfg.centrality,
+            )
+
+            self._status_wrapper("MLN: rendering communities")
+            community_fig = render_mln_communities(
+                community_df,
+                layer_label=layer_column,
+                node_label=cfg.name_column,
+            )
+
+            self._status_wrapper("MLN: complete.")
+            self.finished.emit(
+                MLNResult(
+                    graph=graph,
+                    nodes=nodes,
+                    intra=intra,
+                    inter=inter,
+                    layer_values=values,
+                    layer_column=layer_column,
+                    node_column=cfg.name_column,
+                    centrality=mcfg.centrality,
+                    n_intra_edges=n_intra,
+                    n_inter_edges=n_inter,
+                    metrics_fig=metrics_fig,
+                    community_fig=community_fig,
+                )
+            )
+        except WorkerCancelled:
+            self.cancelled.emit()
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"MLN analysis failed: {str(exc)}")
 
     def _progress_wrapper(self, done: int, total: int, desc: str) -> None:
         """Wrap progress callback; raises if cancellation was requested."""

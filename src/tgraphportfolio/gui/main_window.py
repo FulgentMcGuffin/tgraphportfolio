@@ -10,7 +10,9 @@ from pathlib import Path
 from PySide6.QtCore import QDate, QThread, QUrl, Qt
 from PySide6.QtGui import QColor, QPalette, QPixmap, QTextCursor
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -34,6 +36,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -50,6 +54,7 @@ from tgraphportfolio.analysis.config import PipelineConfig
 from tgraphportfolio.analysis.data_access import (
     column_date_bounds,
     distinct_values,
+    eligible_layer_columns,
     list_columns,
     list_tables,
 )
@@ -61,11 +66,22 @@ from tgraphportfolio.analysis.measures import (
     available_measures,
     measure_short_label,
 )
+from tgraphportfolio.analysis.mln import MLNConfig
+from tgraphportfolio.analysis.multiplex_data import filter_tables
+from tgraphportfolio.analysis.multiplex_plotly import build_multiplex_figure
 from tgraphportfolio.analysis.pipeline import PipelineResult
 from tgraphportfolio.analysis.transforms import available_transforms
 from tgraphportfolio.gui.evolution_settings_dialog import EvolutionSettingsDialog
+from tgraphportfolio.gui.mln_bridge import MLNBridge, inject_click_bridge
+from tgraphportfolio.gui.mln_settings_dialog import MLNSettingsDialog
 from tgraphportfolio.gui.styles import APP_STYLE, BG_SIDEBAR
-from tgraphportfolio.gui.workers import EvolutionWorker, EvolutionResult, PipelineWorker
+from tgraphportfolio.gui.workers import (
+    EvolutionWorker,
+    EvolutionResult,
+    MLNResult,
+    MLNWorker,
+    PipelineWorker,
+)
 
 
 def _force_dark_surface(widget: QWidget, color: str = BG_SIDEBAR) -> None:
@@ -114,6 +130,21 @@ class MainWindow(QMainWindow):
         from tgraphportfolio.gui.edge_settings_dialog import EdgeSettingsConfig
 
         self._edge_settings = EdgeSettingsConfig()
+
+        # Multi-layer network (MLN) state -- a third worker stage that runs
+        # between the pipeline and the evolution analysis.
+        self._mln_config = MLNConfig(layer_column="")
+        self._mln_worker_thread: QThread | None = None
+        self._mln_worker: MLNWorker | None = None
+        self._mln_result: MLNResult | None = None
+        self._mln_temp_html: Path | None = None
+        self._mln_temp_dir: Path | None = None
+        self._mln_layer_column: str | None = None
+        self._mln_enabled_this_run = False
+        self._last_config: PipelineConfig | None = None
+        self._mln_row_of: dict[tuple[str, str], int] = {}
+        self._mln_bridge = MLNBridge()
+        self._mln_channel: QWebChannel | None = None
 
         root = QWidget()
         root.setObjectName("Root")
@@ -196,15 +227,43 @@ class MainWindow(QMainWindow):
         form.addWidget(self._section("DATE / DATETIME COLUMN"))
         self.cmb_date = QComboBox()
         self.cmb_date.currentTextChanged.connect(self._guess_date_range)
+        self.cmb_date.currentTextChanged.connect(self._on_role_column_changed)
         form.addWidget(self.cmb_date)
 
         form.addWidget(self._section("NODE NAME COLUMN"))
         self.cmb_name = QComboBox()
+        # A column claimed as node-name/value can no longer be an MLN layer.
+        self.cmb_name.currentTextChanged.connect(self._on_role_column_changed)
         form.addWidget(self.cmb_name)
 
         form.addWidget(self._section("SERIES VALUE COLUMN"))
         self.cmb_value = QComboBox()
+        self.cmb_value.currentTextChanged.connect(self._on_role_column_changed)
         form.addWidget(self.cmb_value)
+
+        mln_body = self._collapsible_section(form, "MLN", collapsed=True)
+        self.chk_mln = QCheckBox("MLN")
+        self.chk_mln.setToolTip(
+            "Build a multi-layer network: one layer per distinct value of the "
+            "column below, using the same measure, dates and filter as the "
+            "single network."
+        )
+        self.chk_mln.toggled.connect(self._on_mln_toggled)
+        mln_body.addWidget(self.chk_mln)
+        self.cmb_mln_layer = QComboBox()  # uneditable by design
+        self.cmb_mln_layer.setToolTip(
+            "Layer column. Only discrete, low-cardinality columns qualify, and "
+            "never the date, node-name or series-value columns."
+        )
+        mln_body.addWidget(self.cmb_mln_layer)
+        self.btn_mln_settings = QPushButton("⚙ MLN Settings")
+        self.btn_mln_settings.setObjectName("SecondaryButton")
+        self.btn_mln_settings.clicked.connect(self._show_mln_settings)
+        self.btn_mln_settings.setToolTip(
+            "Configure MLN centrality, community method and Jaccard threshold"
+        )
+        mln_body.addWidget(self.btn_mln_settings)
+        self.cmb_mln_layer.setEnabled(False)  # MLN starts unchecked
 
         filter_body = self._collapsible_section(form, "OPTIONAL FILTER", collapsed=True)
         self.radio_filter_column = QRadioButton("Column value")
@@ -375,6 +434,31 @@ class MainWindow(QMainWindow):
         self.hist_canvas_layout.addWidget(self.hist_label)
         hist_layout.addWidget(self.hist_container)
         self.tabs.addTab(hist_page, "Degree histogram")
+
+        # --- MLN tabs (immediately right of the single-network tabs) ---
+        self.tabs.addTab(self._build_mln_page(), "MLN")
+
+        mln_metrics_page = QFrame()
+        mln_metrics_page.setObjectName("Canvas")
+        mln_metrics_outer = QVBoxLayout(mln_metrics_page)
+        mln_metrics_outer.setContentsMargins(8, 8, 8, 8)
+        self.mln_metrics_container = QWidget()
+        self.mln_metrics_layout = QVBoxLayout(self.mln_metrics_container)
+        self.mln_metrics_layout.setContentsMargins(0, 0, 0, 0)
+        mln_metrics_outer.addWidget(self.mln_metrics_container)
+        self._set_mln_metrics_placeholder()
+        self.tabs.addTab(mln_metrics_page, "MLN: Metrics")
+
+        mln_comm_page = QFrame()
+        mln_comm_page.setObjectName("Canvas")
+        mln_comm_outer = QVBoxLayout(mln_comm_page)
+        mln_comm_outer.setContentsMargins(8, 8, 8, 8)
+        self.mln_community_container = QWidget()
+        self.mln_community_layout = QVBoxLayout(self.mln_community_container)
+        self.mln_community_layout.setContentsMargins(0, 0, 0, 0)
+        mln_comm_outer.addWidget(self.mln_community_container)
+        self._set_mln_community_placeholder()
+        self.tabs.addTab(mln_comm_page, "MLN: Community")
 
         # --- Evolution: Weighted Degree tab ---
         evolution_deg_page = QFrame()
@@ -879,6 +963,7 @@ class MainWindow(QMainWindow):
 
         self._guess_roles(columns)
         self._load_filter_values(self.cmb_filter_col.currentText())
+        self._reload_mln_columns()
         self._guess_date_range()
         self.btn_run.setEnabled(True)
         self._append_log(f"Selected table {table!r} ({len(columns)} columns).")
@@ -925,9 +1010,13 @@ class MainWindow(QMainWindow):
         current = self.cmb_filter_val.currentText()
         self.cmb_filter_val.blockSignals(True)
         self.cmb_filter_val.clear()
+        # A leading blank keeps "no filter" expressible. Without it the combo
+        # auto-selects the first distinct value, which would silently filter
+        # every build on a column the user never opted into -- the filter is
+        # meant to be optional, and the radio group has no "off" position.
+        self.cmb_filter_val.addItem("")
         self.cmb_filter_val.addItems(values)
-        if current:
-            self.cmb_filter_val.setEditText(current)
+        self.cmb_filter_val.setEditText(current)
         self.cmb_filter_val.blockSignals(False)
 
     def _guess_date_range(self, *_args) -> None:
@@ -969,6 +1058,8 @@ class MainWindow(QMainWindow):
             self.cmb_date,
             self.cmb_name,
             self.cmb_value,
+            self.chk_mln,
+            self.btn_mln_settings,
             self.radio_filter_column,
             self.radio_filter_where,
             self.lst_transforms,
@@ -987,6 +1078,7 @@ class MainWindow(QMainWindow):
         self.txt_filter_where.setEnabled(
             enabled and self.radio_filter_where.isChecked()
         )
+        self.cmb_mln_layer.setEnabled(enabled and self.chk_mln.isChecked())
         # Run only makes sense once a DB is loaded.
         if enabled and self._db_path is None:
             self.btn_run.setEnabled(False)
@@ -1057,6 +1149,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid settings", str(exc))
             return
 
+        # Resolve the MLN request before starting anything: a skip must warn the
+        # user now (while they are still looking at the screen) and leave the
+        # single network + evolution to run normally, rather than aborting the
+        # whole build or surfacing minutes later mid-chain.
+        mln_column, mln_skip = self._mln_request(config)
+        if mln_skip:
+            QMessageBox.warning(self, "MLN skipped", mln_skip)
+            self._append_log(f"MLN skipped: {mln_skip.splitlines()[0]}")
+        self._mln_layer_column = mln_column
+        self._mln_enabled_this_run = mln_column is not None
+        self._last_config = config
+
         # New run: clear any cancellation requested by a previous run so this
         # one isn't stillborn (checked inside the worker's progress/status callbacks).
         self._cancel_event.clear()
@@ -1072,6 +1176,10 @@ class MainWindow(QMainWindow):
         self.web.setHtml(self._building_html())
         self._set_hist_building()
         self._set_evolution_building()
+        if self._mln_enabled_this_run:
+            self._set_mln_building()
+        else:
+            self._clear_mln_tabs()
         self.tabs.setCurrentIndex(0)
 
         # Keep strong Python refs — a local worker is GC'd and the thread dies
@@ -1150,7 +1258,23 @@ class MainWindow(QMainWindow):
 
         self._cleanup_worker()
 
-        # Launch evolution analysis
+        # MLN runs before evolution: it needs the same settings, and the user
+        # wants its results on screen first.
+        if self._mln_enabled_this_run and self._mln_layer_column:
+            self._launch_mln_worker()
+            return
+
+        self._continue_to_evolution()
+
+    def _continue_to_evolution(self) -> None:
+        """Single funnel into the evolution stage.
+
+        Every MLN outcome (done, failed, skipped, disabled) reaches evolution
+        through here, so the chain behaves identically in all of them --
+        except cancellation, which must stop the chain entirely.
+        """
+        if self._cancel_event.is_set():
+            return
         if self._cached_df_returns is not None and self._cached_dates is not None:
             self._launch_evolution_worker()
         else:
@@ -1177,6 +1301,424 @@ class MainWindow(QMainWindow):
         unlike ``_on_failed``.
         """
         self._cleanup_worker()
+
+    # ============================================================================
+    # Multi-Layer Network (MLN) Methods
+    # ============================================================================
+
+    def _build_mln_page(self) -> QWidget:
+        """The 'MLN' tab: 3D multiplex view + layer checklist + node table."""
+        page = QFrame()
+        page.setObjectName("Canvas")
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+
+        self.mln_web = QWebEngineView()
+        self.mln_web.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.mln_web.setHtml(self._mln_placeholder_html())
+        outer.addWidget(self.mln_web, stretch=4)
+
+        side = QWidget()
+        side.setMaximumWidth(240)
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(4, 6, 6, 6)
+        side_layout.setSpacing(4)
+
+        side_layout.addWidget(self._section("VISIBLE LAYERS"))
+        self.lst_mln_layers = QListWidget()
+        self.lst_mln_layers.setMaximumHeight(130)
+        self.lst_mln_layers.itemChanged.connect(self._on_mln_layer_toggled)
+        side_layout.addWidget(self.lst_mln_layers)
+
+        side_layout.addWidget(self._section("NODES"))
+        self.tbl_mln_nodes = QTableWidget(0, 2)
+        self.tbl_mln_nodes.setHorizontalHeaderLabels(["Node", "Layer"])
+        self.tbl_mln_nodes.verticalHeader().setVisible(False)
+        self.tbl_mln_nodes.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tbl_mln_nodes.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        side_layout.addWidget(self.tbl_mln_nodes, stretch=1)
+        outer.addWidget(side, stretch=1)
+
+        # Click bridge: Plotly node clicks -> highlight the matching table row.
+        self._mln_channel = QWebChannel(self.mln_web.page())
+        self._mln_channel.registerObject("mlnBridge", self._mln_bridge)
+        self.mln_web.page().setWebChannel(self._mln_channel)
+        self._mln_bridge.node_clicked.connect(self._on_mln_node_clicked)
+        return page
+
+    @staticmethod
+    def _mln_placeholder_html(
+        message: str = "Enable MLN in the sidebar and build a network.",
+    ) -> str:
+        return (
+            "<!DOCTYPE html><html><body style='font-family:Segoe UI,sans-serif;"
+            "display:flex;align-items:center;justify-content:center;height:100%;"
+            "margin:0;background:#0f172a;color:#94a3b8'>"
+            f"<p>{message}</p></body></html>"
+        )
+
+    def _clear_layout(self, layout: QVBoxLayout) -> None:
+        """Remove every widget from a canvas layout, closing old figures."""
+        while layout.count():
+            widget = layout.takeAt(0).widget()
+            if isinstance(widget, FigureCanvas) and widget.figure:
+                plt.close(widget.figure)
+            if widget:
+                widget.deleteLater()
+
+    def _mln_placeholder_label(self, message: str) -> QLabel:
+        label = QLabel(message)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #94a3b8; font-size: 14px; background: transparent;")
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        return label
+
+    def _set_mln_metrics_placeholder(self, message: str | None = None) -> None:
+        self._clear_layout(self.mln_metrics_layout)
+        self.mln_metrics_layout.addWidget(
+            self._mln_placeholder_label(
+                message or "MLN metrics will appear here after you build a network."
+            )
+        )
+
+    def _set_mln_community_placeholder(self, message: str | None = None) -> None:
+        self._clear_layout(self.mln_community_layout)
+        self.mln_community_layout.addWidget(
+            self._mln_placeholder_label(
+                message or "MLN communities will appear here after you build a network."
+            )
+        )
+
+    def _set_mln_building(self) -> None:
+        """Put the MLN tabs into their 'computing' state."""
+        self._set_mln_metrics_placeholder("Computing multi-layer network...")
+        self._set_mln_community_placeholder("Computing multi-layer network...")
+        self.mln_web.setHtml(
+            self._mln_placeholder_html("Computing multi-layer network...")
+        )
+
+    def _clear_mln_tabs(self, message: str | None = None) -> None:
+        """Clear all three MLN tabs and drop any cached result."""
+        text = message or "MLN is disabled for this build."
+        self._set_mln_metrics_placeholder(text)
+        self._set_mln_community_placeholder(text)
+        self.mln_web.setHtml(self._mln_placeholder_html(text))
+        self.lst_mln_layers.blockSignals(True)
+        self.lst_mln_layers.clear()
+        self.lst_mln_layers.blockSignals(False)
+        self.tbl_mln_nodes.setRowCount(0)
+        self._mln_row_of = {}
+        self._mln_result = None
+
+    def _show_mln_metrics(self, fig: Figure) -> None:
+        try:
+            self._clear_layout(self.mln_metrics_layout)
+            canvas = FigureCanvas(fig)
+            canvas.setStyleSheet("background-color: transparent;")
+            self.mln_metrics_layout.addWidget(canvas)
+            canvas.draw()
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"MLN metrics display error: {exc}")
+
+    def _show_mln_community(self, fig: Figure) -> None:
+        try:
+            self._clear_layout(self.mln_community_layout)
+            canvas = FigureCanvas(fig)
+            canvas.setStyleSheet("background-color: transparent;")
+            self.mln_community_layout.addWidget(canvas)
+            canvas.draw()
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"MLN community display error: {exc}")
+
+    # ---------------------------------------------------------------- sidebar
+
+    def _on_role_column_changed(self, _text: str) -> None:
+        """A date/name/value column changed -- MLN eligibility may have shifted."""
+        self._reload_mln_columns()
+
+    def _on_mln_toggled(self, checked: bool) -> None:
+        """Enable/clear the layer dropdown to match the MLN checkbox."""
+        self.cmb_mln_layer.setEnabled(checked and not self._busy)
+        if checked:
+            self._reload_mln_columns()
+        else:
+            self.cmb_mln_layer.clear()
+
+    def _reload_mln_columns(self) -> None:
+        """Repopulate the layer dropdown with columns eligible as layer keys."""
+        if not self.chk_mln.isChecked() or not self._db_path:
+            return
+        table = self.cmb_table.currentText()
+        if not table:
+            return
+        exclude = {
+            self.cmb_date.currentText(),
+            self.cmb_name.currentText(),
+            self.cmb_value.currentText(),
+        }
+        try:
+            columns = eligible_layer_columns(self._db_path, table, exclude=exclude)
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 -- never break the GUI on a schema quirk
+            self._append_log(f"MLN: could not inspect columns: {exc}")
+            columns = []
+
+        current = self.cmb_mln_layer.currentText()
+        self.cmb_mln_layer.blockSignals(True)
+        self.cmb_mln_layer.clear()
+        self.cmb_mln_layer.addItems(columns)
+        if current in columns:
+            self.cmb_mln_layer.setCurrentText(current)
+        self.cmb_mln_layer.blockSignals(False)
+        if not columns:
+            self._append_log(
+                "MLN: no eligible layer column in this table (needs a discrete "
+                "column with 2-50 distinct values, or under 20 if integer)."
+            )
+
+    def _show_mln_settings(self) -> None:
+        dialog = MLNSettingsDialog(self, initial_config=self._mln_config)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._mln_config = dialog.get_config()
+            self._append_log(
+                f"MLN settings: centrality={self._mln_config.centrality}, "
+                f"jaccard={self._mln_config.jaccard_threshold:.2f}, "
+                f"method={self._mln_config.community_method.value}, "
+                f"max_communities={self._mln_config.max_communities}"
+            )
+
+    def _mln_request(self, config: PipelineConfig) -> tuple[str | None, str | None]:
+        """Resolve the MLN request for this build.
+
+        Returns ``(layer_column, skip_reason)``; ``layer_column`` is None when
+        MLN is off or must be skipped.
+        """
+        if not self.chk_mln.isChecked():
+            return None, None
+        layer_column = self.cmb_mln_layer.currentText().strip()
+        if not layer_column:
+            return None, (
+                "MLN is enabled but no layer column is selected, so it will be "
+                "skipped for this build."
+            )
+        if (
+            config.filter_mode == "column_value"
+            and config.filter_column
+            and config.filter_value
+            and layer_column == config.filter_column
+        ):
+            return None, (
+                f"The MLN layer column ({layer_column!r}) is the same column the "
+                f"Optional Filter pins to {config.filter_value!r}. Every row would "
+                "fall in a single layer, so the multi-layer network would collapse "
+                "to the single network.\n\nMLN will be skipped for this build; the "
+                "single network and evolution analysis will run normally.\n\n"
+                "Pick a different layer column, or clear the filter."
+            )
+        return layer_column, None
+
+    # ------------------------------------------------------------- MLN worker
+
+    def _launch_mln_worker(self) -> None:
+        """Stage 2 of the chain: build the multi-layer network."""
+        if self._last_config is None or not self._mln_layer_column:
+            self._continue_to_evolution()
+            return
+
+        self._append_log("Starting MLN analysis...")
+        mln_config = MLNConfig(
+            layer_column=self._mln_layer_column,
+            centrality=self._mln_config.centrality,
+            jaccard_threshold=self._mln_config.jaccard_threshold,
+            community_method=self._mln_config.community_method,
+            max_communities=self._mln_config.max_communities,
+            min_nodes=self._mln_config.min_nodes,
+        )
+
+        self._mln_worker_thread = QThread(self)
+        self._mln_worker = MLNWorker(
+            self._last_config,
+            mln_config,
+            edge_settings=self._edge_settings.to_dict(),
+            cancel_event=self._cancel_event,
+        )
+        self._mln_worker.moveToThread(self._mln_worker_thread)
+        self._mln_worker_thread.started.connect(self._mln_worker.run)
+        self._mln_worker.progress.connect(self._on_mln_progress)
+        self._mln_worker.status.connect(self._on_mln_status)
+        self._mln_worker.finished.connect(self._on_mln_finished)
+        self._mln_worker.failed.connect(self._on_mln_failed)
+        self._mln_worker.cancelled.connect(self._on_mln_cancelled)
+        self._mln_worker.finished.connect(self._mln_worker_thread.quit)
+        self._mln_worker.failed.connect(self._mln_worker_thread.quit)
+        self._mln_worker.cancelled.connect(self._mln_worker_thread.quit)
+        self._mln_worker_thread.start()
+
+    def _cleanup_mln_worker(self) -> None:
+        self._mln_worker = None
+        self._mln_worker_thread = None
+
+    def _on_mln_progress(self, done: int, total: int, desc: str) -> None:
+        if total <= 0:
+            return
+        self.progress.setValue(int(100 * done / total))
+        self.lbl_status.setText(f"MLN: {desc}")
+
+    def _on_mln_status(self, message: str) -> None:
+        self.lbl_status.setText(message)
+        self._append_log(message)
+
+    def _on_mln_finished(self, result: object) -> None:
+        if not isinstance(result, MLNResult):
+            self._on_mln_failed(f"Unexpected MLN result type: {type(result)!r}")
+            return
+        self._mln_result = result
+        self._populate_mln_layer_list(result)
+        self._populate_mln_table(result)
+        self._render_mln_view()
+        self._show_mln_metrics(result.metrics_fig)
+        self._show_mln_community(result.community_fig)
+        self._append_log("MLN rendered.")
+        self._cleanup_mln_worker()
+        self._continue_to_evolution()
+
+    def _on_mln_failed(self, message: str) -> None:
+        self._append_log(f"MLN ERROR: {message}")
+        self._clear_mln_tabs(f"MLN failed: {message}")
+        self._cleanup_mln_worker()
+        # Evolution is independent of the MLN -- keep the chain going.
+        self._continue_to_evolution()
+
+    def _on_mln_cancelled(self) -> None:
+        """MLN worker unwound after a cancellation request.
+
+        ``_cancel_render`` performs the UI cleanup and the chain must stop here,
+        so this only drops the worker refs (see ``_on_cancelled``).
+        """
+        self._cleanup_mln_worker()
+
+    # ------------------------------------------------------- MLN interactivity
+
+    def _populate_mln_layer_list(self, result: MLNResult) -> None:
+        """Fill the visible-layers checklist (all layers checked initially)."""
+        self.lst_mln_layers.blockSignals(True)
+        self.lst_mln_layers.clear()
+        for value in result.layer_values:
+            item = QListWidgetItem(value)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            self.lst_mln_layers.addItem(item)
+        self.lst_mln_layers.blockSignals(False)
+
+    def _selected_mln_layers(self) -> list[str]:
+        return [
+            self.lst_mln_layers.item(i).text()
+            for i in range(self.lst_mln_layers.count())
+            if self.lst_mln_layers.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _populate_mln_table(self, result: MLNResult) -> None:
+        """Fill the node table and the (node, layer) -> row index for O(1) lookup."""
+        rows = result.nodes.select(["issuer", "term"]).rows()
+        self.tbl_mln_nodes.setRowCount(len(rows))
+        self.tbl_mln_nodes.setHorizontalHeaderLabels(
+            [result.node_column, result.layer_column]
+        )
+        self._mln_row_of = {}
+        for row_idx, (node, layer) in enumerate(rows):
+            self.tbl_mln_nodes.setItem(row_idx, 0, QTableWidgetItem(str(node)))
+            self.tbl_mln_nodes.setItem(row_idx, 1, QTableWidgetItem(str(layer)))
+            self._mln_row_of[(str(node), str(layer))] = row_idx
+        self.tbl_mln_nodes.resizeColumnsToContents()
+
+    def _on_mln_layer_toggled(self, _item) -> None:
+        """Re-render the 3D view for the new layer selection.
+
+        Cheap enough for the GUI thread: the multiplex tables are cached on the
+        result, so this only re-filters and redraws -- nothing is recomputed.
+        """
+        self._render_mln_view()
+
+    def _render_mln_view(self) -> None:
+        """Draw the cached multiplex for the currently checked layers."""
+        result = self._mln_result
+        if result is None:
+            return
+        visible = self._selected_mln_layers()
+        if not visible:
+            self.mln_web.setHtml(self._mln_placeholder_html("No layers selected."))
+            return
+        try:
+            nodes, intra, inter = filter_tables(
+                result.nodes, result.intra, result.inter, visible
+            )
+            all_nodes = sorted(result.nodes.get_column("issuer").unique().to_list())
+            fig = build_multiplex_figure(
+                nodes,
+                intra,
+                inter,
+                visible,
+                all_issuers=all_nodes,
+                title=(
+                    f"{result.node_column} x {result.layer_column} "
+                    "multi-layer network"
+                ),
+                layer_label=result.layer_column,
+            )
+            # 'directory' keeps each page ~50KB by referencing a plotly.min.js
+            # written once alongside it; inlining would rewrite 4MB on every
+            # layer toggle.
+            html = inject_click_bridge(
+                fig.to_html(full_html=True, include_plotlyjs="directory")
+            )
+            self._write_mln_html(html)
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"MLN view render error: {exc}")
+
+    def _mln_asset_dir(self) -> Path:
+        """Temp dir holding the MLN page and its one-time plotly.min.js sidecar."""
+        if self._mln_temp_dir is None:
+            self._mln_temp_dir = Path(tempfile.mkdtemp(prefix="tgraph_mln_"))
+        js_path = self._mln_temp_dir / "plotly.min.js"
+        if not js_path.exists():
+            from plotly.offline import get_plotlyjs
+
+            js_path.write_text(get_plotlyjs(), encoding="utf-8")
+        return self._mln_temp_dir
+
+    def _write_mln_html(self, html: str) -> None:
+        """Write the MLN page next to its JS sidecar and load it."""
+        directory = self._mln_asset_dir()
+        handle = tempfile.NamedTemporaryFile(
+            prefix="view_", suffix=".html", dir=str(directory), delete=False
+        )
+        handle.write(html.encode("utf-8"))
+        handle.close()
+        old = self._mln_temp_html
+        self._mln_temp_html = Path(handle.name)
+        self.mln_web.load(QUrl.fromLocalFile(str(self._mln_temp_html.resolve())))
+        if old and old.exists():
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    def _on_mln_node_clicked(self, node: str, layer: str) -> None:
+        """Select and scroll to the clicked node's row in the side table."""
+        row = self._mln_row_of.get((node, layer))
+        if row is None:
+            return
+        self.tbl_mln_nodes.selectRow(row)
+        item = self.tbl_mln_nodes.item(row, 0)
+        if item is not None:
+            self.tbl_mln_nodes.scrollToItem(item)
+        self.lbl_status.setText(f"MLN: selected {node} in {layer}")
 
     # ============================================================================
     # Evolution Analysis Methods
@@ -1479,6 +2021,14 @@ class MainWindow(QMainWindow):
             else:
                 self._append_log("Pipeline cancelled.")
 
+        # Stop MLN worker
+        if self._mln_worker_thread and self._mln_worker_thread.isRunning():
+            self._mln_worker_thread.quit()
+            if not self._mln_worker_thread.wait(2000):
+                self._append_log("WARNING: MLN worker did not stop within 2s.")
+            else:
+                self._append_log("MLN analysis cancelled.")
+
         # Stop evolution worker
         if self._evolution_worker_thread and self._evolution_worker_thread.isRunning():
             self._evolution_worker_thread.quit()
@@ -1488,12 +2038,14 @@ class MainWindow(QMainWindow):
                 self._append_log("Evolution analysis cancelled.")
 
         self._cleanup_worker()
+        self._cleanup_mln_worker()
         self._evolution_worker = None
         self._evolution_worker_thread = None
 
         # Clear all visualizations
         # Clear network canvas
         self.web.setHtml(self._placeholder_html())
+        self._clear_mln_tabs("Render cancelled.")
 
         # Clear histogram canvas
         while self.hist_canvas_layout.count():
@@ -1612,12 +2164,19 @@ class MainWindow(QMainWindow):
         if self._worker_thread is not None and self._worker_thread.isRunning():
             self._worker_thread.quit()
             self._worker_thread.wait(2000)
+        if self._mln_worker_thread is not None and self._mln_worker_thread.isRunning():
+            self._mln_worker_thread.quit()
+            self._mln_worker_thread.wait(2000)
         if (
             self._evolution_worker_thread is not None
             and self._evolution_worker_thread.isRunning()
         ):
             self._evolution_worker_thread.quit()
             self._evolution_worker_thread.wait(2000)
+        if self._mln_temp_dir and self._mln_temp_dir.exists():
+            import shutil
+
+            shutil.rmtree(self._mln_temp_dir, ignore_errors=True)
         if self._temp_html and self._temp_html.exists():
             try:
                 self._temp_html.unlink()

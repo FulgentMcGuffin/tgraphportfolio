@@ -1490,6 +1490,19 @@ wheels = [
 ]
 
 [[package]]
+name = "plotly"
+version = "7.0.0rc0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "narwhals" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4e/6d/5902918ae6fe19fdca273c03214531fba5cd875fb21ef42e7fdc15e004f9/plotly-7.0.0rc0.tar.gz", hash = "sha256:cb1b03bc2ebe840fb4540832467e5a86480eb9ee8a7aa46069668c554c341ddb", size = 6026684, upload-time = "2026-07-29T16:50:31.317Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/7c/a7873b83872e3e2d27c61ae860ab29b8c78e82c6db13340cce479eedb7d3/plotly-7.0.0rc0-py3-none-any.whl", hash = "sha256:7cc7e4e2f797a8ee4e440dcb3c2b69d7570cab5a41cbf3e7417317daf66a3668", size = 8772157, upload-time = "2026-07-29T16:50:26.796Z" },
+]
+
+[[package]]
 name = "plotnine"
 version = "0.15.7"
 source = { registry = "https://pypi.org/simple" }
@@ -2154,6 +2167,7 @@ dependencies = [
     { name = "numba" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "plotly" },
     { name = "plotnine" },
     { name = "polars" },
     { name = "py3plex" },
@@ -2187,6 +2201,7 @@ requires-dist = [
     { name = "numba", specifier = ">=0.66" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "pandas", specifier = ">=3.0.5" },
+    { name = "plotly", specifier = ">=7.0.0rc0" },
     { name = "plotnine", specifier = ">=0.15.7" },
     { name = "polars", specifier = ">=1.43.2" },
     { name = "py3plex", git = "https://github.com/SkBlaz/py3plex.git" },

@@ -7,8 +7,15 @@ from pathlib import Path
 
 import polars as pl
 
+from tgraphportfolio.backends.base import _normalize_sql_type
 from tgraphportfolio.backends.duckdb_backend import DuckDBSource
 from tgraphportfolio.backends.sqlite_backend import SQLiteSource
+
+# A multi-layer network needs a column with a small, discrete set of values:
+# one layer per distinct value. These bounds keep the layer count sane (and the
+# per-layer O(n^2) measure cost bounded).
+MAX_LAYER_VALUES = 50
+MAX_INTEGER_LAYER_VALUES = 20
 
 
 def open_backend(db_path: Path | str, *, read_only: bool = True):
@@ -33,6 +40,60 @@ def list_columns(db_path: Path | str, table: str) -> list[str]:
     with open_backend(db_path) as db:
         schema = db.get_schema(table)
         return [col.name for col in schema.columns]
+
+
+def eligible_layer_columns(
+    db_path: Path | str,
+    table: str,
+    *,
+    exclude: set[str] | None = None,
+) -> list[str]:
+    """Columns usable as a multi-layer-network layer key.
+
+    A layer column must be a discrete, low-cardinality label. Text columns
+    qualify with at most ``MAX_LAYER_VALUES`` distinct values; integer columns
+    are allowed only as an exception, and only below
+    ``MAX_INTEGER_LAYER_VALUES``. Floats, dates and timestamps are continuous
+    and never qualify. Columns with fewer than two distinct values are dropped
+    too -- they would collapse the multiplex to a single layer.
+
+    Args:
+        db_path: Database file.
+        table: Table to inspect.
+        exclude: Columns already claimed by other roles (date/name/value).
+
+    Returns:
+        Eligible column names, sorted. Columns whose cardinality cannot be
+        determined are skipped rather than raising.
+    """
+    skip = {c.lower() for c in (exclude or set()) if c}
+    eligible: list[str] = []
+    with open_backend(db_path) as db:
+        for col in db.get_schema(table).columns:
+            if col.name.lower() in skip:
+                continue
+            kind = _normalize_sql_type(col.type)
+            if kind not in {"TEXT", "INTEGER"}:
+                continue  # REAL / DATE / TIMESTAMP are continuous
+            try:
+                frame = db.run_query(
+                    f'SELECT COUNT(DISTINCT "{col.name}") AS n FROM "{table}"'
+                )
+            except Exception:  # noqa: BLE001 -- an odd column must not break the GUI
+                continue
+            if frame.is_empty():
+                continue
+            n_distinct = int(frame.row(0)[0] or 0)
+            if n_distinct < 2:
+                continue
+            if kind == "INTEGER":
+                # Integers are the documented exception: strictly under 20.
+                ok = n_distinct < MAX_INTEGER_LAYER_VALUES
+            else:
+                ok = n_distinct <= MAX_LAYER_VALUES
+            if ok:
+                eligible.append(col.name)
+    return sorted(eligible)
 
 
 def load_table(

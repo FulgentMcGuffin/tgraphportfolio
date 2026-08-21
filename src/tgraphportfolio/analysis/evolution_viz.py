@@ -7,6 +7,8 @@ from matplotlib.ticker import MaxNLocator
 import numpy as np
 import polars as pl
 
+from .cursor_util import RedrawOnChangeMixin
+
 # Figures here are built directly via the Figure API (not pyplot.subplots) so
 # rendering can safely run on a background QThread -- pyplot's state machine is
 # tied to the active GUI backend and warns/fails when touched off the main thread.
@@ -14,13 +16,20 @@ import polars as pl
 # Shared qualitative palette (matches the notebook's CATEGORICAL_6, extended to 10)
 # for the centrality trajectories lines and the community heatmap categories.
 CATEGORICAL_10 = [
-    "#2a78d6", "#eb6834", "#1baf7a", "#eda100",
-    "#e87ba4", "#008300", "#ff7f0e", "#2ca02c",
-    "#d62728", "#9467bd",
+    "#2a78d6",
+    "#eb6834",
+    "#1baf7a",
+    "#eda100",
+    "#e87ba4",
+    "#008300",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
 ]
 
 
-class _HeatmapCursor:
+class _HeatmapCursor(RedrawOnChangeMixin):
     """Interactive cursor for heatmap hover tooltips."""
 
     def __init__(self, ax, matrix, nodes, window_ends_sorted, canvas):
@@ -37,10 +46,7 @@ class _HeatmapCursor:
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             if self.annot and self.annot.get_visible():
                 self.annot.set_visible(False)
-                try:
-                    self.canvas.draw_idle()
-                except Exception:
-                    pass
+            self._redraw_if_changed(None)
             return
 
         # Get nearest grid cell
@@ -48,7 +54,9 @@ class _HeatmapCursor:
         y_idx = int(np.round(event.ydata))
 
         # Bounds check
-        if not (0 <= x_idx < len(self.window_ends_sorted) and 0 <= y_idx < len(self.nodes)):
+        if not (
+            0 <= x_idx < len(self.window_ends_sorted) and 0 <= y_idx < len(self.nodes)
+        ):
             if self.annot and self.annot.get_visible():
                 self.annot.set_visible(False)
             return
@@ -64,7 +72,9 @@ class _HeatmapCursor:
                 xy=(0, 0),
                 xytext=(10, 10),
                 textcoords="offset points",
-                bbox=dict(boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9),
+                bbox=dict(
+                    boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9
+                ),
                 color="#e2e8f0",
                 fontsize=9,
                 zorder=100,
@@ -76,13 +86,11 @@ class _HeatmapCursor:
         self.annot.xy = (event.xdata, event.ydata)
         self.annot.set_visible(True)
 
-        try:
-            self.canvas.draw_idle()
-        except Exception:
-            pass
+        # Moving within the same cell shows the same tooltip -- skip the repaint.
+        self._redraw_if_changed(text)
 
 
-class _LineCursor:
+class _LineCursor(RedrawOnChangeMixin):
     """Interactive cursor for line-plot hover tooltips and click-to-highlight."""
 
     def __init__(self, ax, line_data, canvas, line_objects=None, original_styles=None):
@@ -191,13 +199,12 @@ class _LineCursor:
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             if self.annot and self.annot.get_visible():
                 self.annot.set_visible(False)
-                try:
-                    self.canvas.draw_idle()
-                except Exception:
-                    pass
+            self._redraw_if_changed(None)
             return
 
-        best_node, min_dist, best_x_numeric = self._nearest_node(event.xdata, event.ydata)
+        best_node, min_dist, best_x_numeric = self._nearest_node(
+            event.xdata, event.ydata
+        )
         best_point = (event.xdata, event.ydata) if best_node is not None else None
 
         # Only show if close enough
@@ -213,7 +220,9 @@ class _LineCursor:
                 xy=best_point,
                 xytext=(10, 10),
                 textcoords="offset points",
-                bbox=dict(boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9),
+                bbox=dict(
+                    boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9
+                ),
                 color="#e2e8f0",
                 fontsize=9,
                 zorder=100,
@@ -224,6 +233,7 @@ class _LineCursor:
         # Convert numeric date back to string for display
         try:
             from matplotlib.dates import num2date
+
             date_str = num2date(best_x_numeric).strftime("%Y-%m-%d")
         except Exception:
             date_str = str(x_val)
@@ -233,13 +243,11 @@ class _LineCursor:
         self.annot.xy = best_point
         self.annot.set_visible(True)
 
-        try:
-            self.canvas.draw_idle()
-        except Exception:
-            pass
+        # Hovering near the same point shows the same tooltip -- skip the repaint.
+        self._redraw_if_changed((text, best_point))
 
 
-class _MultiPanelCursor:
+class _MultiPanelCursor(RedrawOnChangeMixin):
     """Interactive cursor for a grid of line-plot subplots (nearest-point per panel)."""
 
     def __init__(self, panels: list[tuple], canvas):
@@ -251,15 +259,13 @@ class _MultiPanelCursor:
 
     def on_move(self, event):
         """Handle mouse motion events."""
+        # Collected across all panels so the whole row repaints at most once.
+        shown: list[tuple] = []
         for ax, x_numeric, y_vals, metric_name in self.panels:
             annot = self.annot_by_ax.get(ax)
             if event.inaxes != ax or event.xdata is None or event.ydata is None:
                 if annot and annot.get_visible():
                     annot.set_visible(False)
-                    try:
-                        self.canvas.draw_idle()
-                    except Exception:
-                        pass
                 continue
 
             if len(x_numeric) == 0:
@@ -282,7 +288,9 @@ class _MultiPanelCursor:
                     xy=(x_val, y_val),
                     xytext=(10, 10),
                     textcoords="offset points",
-                    bbox=dict(boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9),
+                    bbox=dict(
+                        boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9
+                    ),
                     color="#e2e8f0",
                     fontsize=8,
                     zorder=100,
@@ -291,6 +299,7 @@ class _MultiPanelCursor:
 
             try:
                 from matplotlib.dates import num2date
+
                 date_str = num2date(x_val).strftime("%Y-%m-%d")
             except Exception:
                 date_str = f"{x_val:.2f}"
@@ -298,14 +307,13 @@ class _MultiPanelCursor:
             annot.set_text(f"{metric_name}\n{date_str}\nValue: {y_val:.3f}")
             annot.xy = (x_val, y_val)
             annot.set_visible(True)
+            shown.append((metric_name, x_val, y_val))
 
-        try:
-            self.canvas.draw_idle()
-        except Exception:
-            pass
+        # One repaint for the whole panel row, and only when something changed.
+        self._redraw_if_changed(tuple(shown))
 
 
-class _CommunityHeatmapCursor:
+class _CommunityHeatmapCursor(RedrawOnChangeMixin):
     """Interactive cursor for the node x window community-membership heatmap."""
 
     def __init__(self, ax, matrix, nodes, window_ends, canvas):
@@ -322,10 +330,7 @@ class _CommunityHeatmapCursor:
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             if self.annot and self.annot.get_visible():
                 self.annot.set_visible(False)
-                try:
-                    self.canvas.draw_idle()
-                except Exception:
-                    pass
+            self._redraw_if_changed(None)
             return
 
         x_idx = int(np.round(event.xdata))
@@ -346,7 +351,9 @@ class _CommunityHeatmapCursor:
                 xy=(0, 0),
                 xytext=(10, 10),
                 textcoords="offset points",
-                bbox=dict(boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9),
+                bbox=dict(
+                    boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9
+                ),
                 color="#e2e8f0",
                 fontsize=9,
                 zorder=100,
@@ -357,10 +364,8 @@ class _CommunityHeatmapCursor:
         self.annot.xy = (event.xdata, event.ydata)
         self.annot.set_visible(True)
 
-        try:
-            self.canvas.draw_idle()
-        except Exception:
-            pass
+        # Moving within the same cell shows the same tooltip -- skip the repaint.
+        self._redraw_if_changed(text)
 
 
 def render_weighted_degree_heatmap(
@@ -385,7 +390,9 @@ def render_weighted_degree_heatmap(
     heatmap_df = node_metrics.filter(pl.col("metric") == "weighted_degree")
 
     if heatmap_df.is_empty():
-        return _empty_plot("No weighted-degree data available", width=width, height=height, dpi=dpi)
+        return _empty_plot(
+            "No weighted-degree data available", width=width, height=height, dpi=dpi
+        )
 
     # Pivot to matrix form
     pivot = heatmap_df.pivot(
@@ -399,8 +406,10 @@ def render_weighted_degree_heatmap(
 
     # Build matrix
     matrix = np.array(
-        [pivot.filter(pl.col("node") == n).select(window_ends_sorted).to_numpy()[0]
-         for n in nodes]
+        [
+            pivot.filter(pl.col("node") == n).select(window_ends_sorted).to_numpy()[0]
+            for n in nodes
+        ]
     )
 
     # Render
@@ -420,7 +429,7 @@ def render_weighted_degree_heatmap(
         [str(window_ends_sorted[i]) for i in tick_indices],
         rotation=45,
         ha="right",
-        fontsize=7
+        fontsize=7,
     )
     ax.set_yticks(np.arange(len(nodes)))
     ax.set_yticklabels(nodes, fontsize=6)
@@ -431,7 +440,9 @@ def render_weighted_degree_heatmap(
 
     # Colorbar
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("Weighted degree", rotation=270, labelpad=20, color="#e2e8f0", fontsize=8)
+    cbar.set_label(
+        "Weighted degree", rotation=270, labelpad=20, color="#e2e8f0", fontsize=8
+    )
     cbar.ax.tick_params(colors="#e2e8f0", labelsize=7)
 
     # Tick colors
@@ -482,7 +493,12 @@ def render_centrality_trajectories(
     cent_df = node_metrics.filter(pl.col("metric") == centrality_metric)
 
     if cent_df.is_empty():
-        return _empty_plot(f"No {centrality_metric} centrality data available", width=width, height=height, dpi=dpi)
+        return _empty_plot(
+            f"No {centrality_metric} centrality data available",
+            width=width,
+            height=height,
+            dpi=dpi,
+        )
 
     # Get all unique nodes and cap n_nodes at total_nodes / 2
     all_nodes = cent_df.get_column("node").unique().to_list()
@@ -559,11 +575,19 @@ def render_centrality_trajectories(
                 "zorder": line.get_zorder(),
             }
 
-        ax.set_ylabel(f"{centrality_metric.title()} centrality", color="#e2e8f0", fontsize=9)
+        ax.set_ylabel(
+            f"{centrality_metric.title()} centrality", color="#e2e8f0", fontsize=9
+        )
         ax.set_title(plot_title, color="#e2e8f0", fontsize=11)
 
-        ax.legend(loc="best", fontsize=7, facecolor="#0f172a", edgecolor="#e2e8f0",
-                  labelcolor="#e2e8f0", framealpha=0.9)
+        ax.legend(
+            loc="best",
+            fontsize=7,
+            facecolor="#0f172a",
+            edgecolor="#e2e8f0",
+            labelcolor="#e2e8f0",
+            framealpha=0.9,
+        )
         ax.grid(True, alpha=0.2, color="#e2e8f0")
         ax.tick_params(colors="#e2e8f0", labelsize=7)
 
@@ -592,7 +616,12 @@ def render_centrality_trajectories(
     # Format: {ax: (ax_obj, line_data, line_objects, original_styles)}
     fig._line_cursor_data = {
         ax_top: (ax_top, top_line_data, top_line_objects, top_original_styles),
-        ax_bottom: (ax_bottom, bottom_line_data, bottom_line_objects, bottom_original_styles),
+        ax_bottom: (
+            ax_bottom,
+            bottom_line_data,
+            bottom_line_objects,
+            bottom_original_styles,
+        ),
     }
 
     return fig
@@ -632,11 +661,15 @@ def render_extended_metrics(
         Matplotlib Figure object with one subplot per metric.
     """
     if network_metrics.is_empty():
-        return _empty_plot("No network metrics available", width=width, height=height, dpi=dpi)
+        return _empty_plot(
+            "No network metrics available", width=width, height=height, dpi=dpi
+        )
 
     metrics = [m for m in _EXTENDED_METRICS if m in network_metrics.columns]
     if not metrics:
-        return _empty_plot("No extended metrics available", width=width, height=height, dpi=dpi)
+        return _empty_plot(
+            "No extended metrics available", width=width, height=height, dpi=dpi
+        )
 
     import matplotlib.dates as mdates
 
@@ -711,7 +744,9 @@ def render_community_heatmap(
         Matplotlib Figure object.
     """
     if community_metrics.is_empty():
-        return _empty_plot("No community data available", width=width, height=height, dpi=dpi)
+        return _empty_plot(
+            "No community data available", width=width, height=height, dpi=dpi
+        )
 
     from matplotlib.colors import ListedColormap
     from matplotlib.patches import Patch
@@ -726,7 +761,10 @@ def render_community_heatmap(
         (col for col in pivot.columns if col != "node"), key=lambda c: int(c)
     )
     matrix = np.array(
-        [pivot.filter(pl.col("node") == n).select(window_idx_cols).to_numpy()[0] for n in nodes]
+        [
+            pivot.filter(pl.col("node") == n).select(window_idx_cols).to_numpy()[0]
+            for n in nodes
+        ]
     )
     matrix = matrix.astype(int)
 
@@ -749,8 +787,12 @@ def render_community_heatmap(
     ax.set_facecolor("#0f172a")
 
     ax.imshow(
-        matrix, aspect="auto", cmap=cmap, interpolation="nearest",
-        vmin=-0.5, vmax=n_communities - 0.5,
+        matrix,
+        aspect="auto",
+        cmap=cmap,
+        interpolation="nearest",
+        vmin=-0.5,
+        vmax=n_communities - 0.5,
     )
 
     tick_interval = max(1, len(window_ends) // 16)
@@ -774,9 +816,14 @@ def render_community_heatmap(
         for i in range(n_communities)
     ]
     legend = ax.legend(
-        handles=legend_handles, title="Community", loc="upper left",
-        bbox_to_anchor=(1.01, 1.0), fontsize=7, facecolor="#0f172a",
-        edgecolor="#e2e8f0", labelcolor="#e2e8f0",
+        handles=legend_handles,
+        title="Community",
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        fontsize=7,
+        facecolor="#0f172a",
+        edgecolor="#e2e8f0",
+        labelcolor="#e2e8f0",
     )
     legend.get_title().set_color("#e2e8f0")
 
@@ -788,16 +835,23 @@ def render_community_heatmap(
     return fig
 
 
-def _empty_plot(message: str, width: int = 12, height: int = 8, dpi: int = 100) -> Figure:
+def _empty_plot(
+    message: str, width: int = 12, height: int = 8, dpi: int = 100
+) -> Figure:
     """Render a placeholder plot with a message."""
     fig = Figure(figsize=(width, height), dpi=dpi)
     ax = fig.add_subplot(111)
     fig.patch.set_facecolor("#0f172a")
     ax.set_facecolor("#1e293b")
     ax.text(
-        0.5, 0.5, message,
-        ha="center", va="center", fontsize=14,
-        color="#94a3b8", transform=ax.transAxes
+        0.5,
+        0.5,
+        message,
+        ha="center",
+        va="center",
+        fontsize=14,
+        color="#94a3b8",
+        transform=ax.transAxes,
     )
     ax.set_xticks([])
     ax.set_yticks([])

@@ -141,6 +141,7 @@ class MainWindow(QMainWindow):
         self._mln_temp_dir: Path | None = None
         self._mln_layer_column: str | None = None
         self._mln_enabled_this_run = False
+        self._evolution_enabled_this_run = False
         self._last_config: PipelineConfig | None = None
         self._mln_row_of: dict[tuple[str, str], int] = {}
         self._mln_bridge = MLNBridge()
@@ -331,17 +332,25 @@ class MainWindow(QMainWindow):
         self.spin_threshold.setValue(0.33)
         form.addWidget(self.spin_threshold)
 
-        form.addSpacing(4)
+        evolution_body = self._collapsible_section(form, "EVOLUTION", collapsed=True)
+        self.chk_evolution = QCheckBox("Run Evolution")
+        self.chk_evolution.setToolTip(
+            "Run the rolling-window evolution analysis after the network is "
+            "built. This recomputes the connection measure for every window, so "
+            "it is much slower than the single network."
+        )
+        self.chk_evolution.toggled.connect(self._on_evolution_toggled)
+        evolution_body.addWidget(self.chk_evolution)
         self.btn_evolution_settings = QPushButton("⚙ Evolution Settings")
         self.btn_evolution_settings.setObjectName("SecondaryButton")
         self.btn_evolution_settings.clicked.connect(self._show_evolution_settings)
         self.btn_evolution_settings.setToolTip(
             "Configure network evolution analysis parameters"
         )
-        form.addWidget(self.btn_evolution_settings)
+        evolution_body.addWidget(self.btn_evolution_settings)
 
         mln_body = self._collapsible_section(form, "MLN", collapsed=True)
-        self.chk_mln = QCheckBox("MLN")
+        self.chk_mln = QCheckBox("Run MLN")
         self.chk_mln.setToolTip(
             "Build a multi-layer network: one layer per distinct value of the "
             "column below, using the same measure, dates and filter as the "
@@ -1064,6 +1073,7 @@ class MainWindow(QMainWindow):
             self.cmb_value,
             self.chk_mln,
             self.btn_mln_settings,
+            self.chk_evolution,
             self.radio_filter_column,
             self.radio_filter_where,
             self.lst_transforms,
@@ -1073,10 +1083,12 @@ class MainWindow(QMainWindow):
             self.date_start,
             self.date_end,
             self.spin_threshold,
-            self.btn_evolution_settings,
             self.btn_run,
         ):
             widget.setEnabled(enabled)
+        self.btn_evolution_settings.setEnabled(
+            enabled and self.chk_evolution.isChecked()
+        )
         self.cmb_filter_col.setEnabled(enabled and self.radio_filter_column.isChecked())
         self.cmb_filter_val.setEnabled(enabled and self.radio_filter_column.isChecked())
         self.txt_filter_where.setEnabled(
@@ -1163,6 +1175,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"MLN skipped: {mln_skip.splitlines()[0]}")
         self._mln_layer_column = mln_column
         self._mln_enabled_this_run = mln_column is not None
+        self._evolution_enabled_this_run = self.chk_evolution.isChecked()
         self._last_config = config
 
         # New run: clear any cancellation requested by a previous run so this
@@ -1179,7 +1192,10 @@ class MainWindow(QMainWindow):
         # Clear any previously rendered views before the new run.
         self.web.setHtml(self._building_html())
         self._set_hist_building()
-        self._set_evolution_building()
+        if self._evolution_enabled_this_run:
+            self._set_evolution_building()
+        else:
+            self._clear_evolution_tabs()
         if self._mln_enabled_this_run:
             self._set_mln_building()
         else:
@@ -1278,6 +1294,9 @@ class MainWindow(QMainWindow):
         except cancellation, which must stop the chain entirely.
         """
         if self._cancel_event.is_set():
+            return
+        if not self._evolution_enabled_this_run:
+            self._set_busy(False)
             return
         if self._cached_df_returns is not None and self._cached_dates is not None:
             self._launch_evolution_worker()
@@ -1819,6 +1838,18 @@ class MainWindow(QMainWindow):
         label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.evolution_community_layout.addWidget(label)
 
+    def _on_evolution_toggled(self, checked: bool) -> None:
+        """Enable/disable the evolution settings button with its checkbox."""
+        self.btn_evolution_settings.setEnabled(checked and not self._busy)
+
+    def _clear_evolution_tabs(self, message: str | None = None) -> None:
+        """Blank all four evolution canvases (evolution disabled or cancelled)."""
+        text = message or "Evolution is disabled for this build."
+        self._set_evolution_deg_placeholder(text)
+        self._set_evolution_cent_placeholder(text)
+        self._set_evolution_extended_placeholder(text)
+        self._set_evolution_community_placeholder(text)
+
     def _set_evolution_building(self) -> None:
         """Set building state for evolution tabs."""
         self._set_evolution_deg_placeholder("Computing evolution metrics...")
@@ -2061,6 +2092,7 @@ class MainWindow(QMainWindow):
         # Clear network canvas
         self.web.setHtml(self._placeholder_html())
         self._clear_mln_tabs("Render cancelled.")
+        self._clear_evolution_tabs("Render cancelled.")
 
         # Clear histogram canvas
         while self.hist_canvas_layout.count():

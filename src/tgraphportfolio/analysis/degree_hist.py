@@ -11,6 +11,8 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
+from .cursor_util import RedrawOnChangeMixin
+
 # Figures here are built directly via the Figure API (not pyplot.subplots) so
 # rendering can safely run on a background QThread -- pyplot's state machine is
 # tied to the active GUI backend and warns/fails when touched off the main thread.
@@ -25,7 +27,7 @@ LABEL_SIZE = 8.5
 MAX_NODE_LABELS = 5
 
 
-class _HistogramCursor:
+class _HistogramCursor(RedrawOnChangeMixin):
     """Interactive cursor for histogram hover tooltips."""
 
     def __init__(self, ax, degrees, bin_edges, canvas):
@@ -42,10 +44,7 @@ class _HistogramCursor:
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             if self.annot and self.annot.get_visible():
                 self.annot.set_visible(False)
-                try:
-                    self.canvas.draw_idle()
-                except Exception:
-                    pass
+            self._redraw_if_changed(None)
             return
 
         # Find bar at this x position
@@ -81,7 +80,9 @@ class _HistogramCursor:
             bin_idx = len(self.bin_edges) - 2
 
         target_degree = int(center_x)
-        nodes_here = [str(n) for n, d in self.degrees.items() if int(d) == target_degree]
+        nodes_here = [
+            str(n) for n, d in self.degrees.items() if int(d) == target_degree
+        ]
 
         # Create annotation only once
         if self.annot is None:
@@ -90,7 +91,9 @@ class _HistogramCursor:
                 xy=(center_x, height),
                 xytext=(10, 10),
                 textcoords="offset points",
-                bbox=dict(boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9),
+                bbox=dict(
+                    boxstyle="round,pad=0.5", fc="#1a1c24", ec="#e2e8f0", alpha=0.9
+                ),
                 color="#e2e8f0",
                 fontsize=9,
                 zorder=100,
@@ -106,10 +109,8 @@ class _HistogramCursor:
         self.annot.xy = (center_x, height)
         self.annot.set_visible(True)
 
-        try:
-            self.canvas.draw_idle()
-        except Exception:
-            pass
+        # Moving within the same bar shows the same tooltip -- no repaint needed.
+        self._redraw_if_changed((text, center_x, height))
 
 
 def histogram_title(

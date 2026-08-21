@@ -92,6 +92,8 @@ class EvolutionResult:
     """Artifacts produced by evolution analysis."""
 
     node_metrics: pl.DataFrame
+    network_metrics: pl.DataFrame
+    community_metrics: pl.DataFrame
     heatmap_fig: Figure
     centrality_fig: Figure
     extended_metrics_fig: Figure
@@ -116,6 +118,9 @@ class MLNResult:
     centrality: str
     n_intra_edges: int
     n_inter_edges: int
+    edge_df: pl.DataFrame
+    centrality_df: pl.DataFrame
+    community_df: pl.DataFrame
     metrics_fig: Figure
     community_fig: Figure
 
@@ -304,6 +309,7 @@ class EvolutionWorker(_ThrottledProgressMixin, QObject):
             extended_metrics_fig = render_extended_metrics(network_metrics)
 
             self._status_wrapper("Detecting communities per window...")
+            community_metrics = pl.DataFrame()
             try:
                 community_metrics = compute_community_metrics(
                     graphs,
@@ -323,6 +329,8 @@ class EvolutionWorker(_ThrottledProgressMixin, QObject):
 
             result = EvolutionResult(
                 node_metrics=node_metrics,
+                network_metrics=network_metrics,
+                community_metrics=community_metrics,
                 heatmap_fig=heatmap_fig,
                 centrality_fig=centrality_fig,
                 extended_metrics_fig=extended_metrics_fig,
@@ -461,6 +469,9 @@ class MLNWorker(_ThrottledProgressMixin, QObject):
                     centrality=mcfg.centrality,
                     n_intra_edges=n_intra,
                     n_inter_edges=n_inter,
+                    edge_df=edge_df,
+                    centrality_df=centrality_df,
+                    community_df=community_df,
                     metrics_fig=metrics_fig,
                     community_fig=community_fig,
                 )

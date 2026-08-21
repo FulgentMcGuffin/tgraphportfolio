@@ -7,7 +7,7 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QThread, QUrl, Qt
+from PySide6.QtCore import QDate, QSize, QThread, QUrl, Qt
 from PySide6.QtGui import QColor, QPalette, QPixmap, QTextCursor
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
@@ -49,6 +49,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
+import networkx as nx
+import polars as pl
 
 from tgraphportfolio.analysis.config import PipelineConfig
 from tgraphportfolio.analysis.data_access import (
@@ -72,6 +74,7 @@ from tgraphportfolio.analysis.multiplex_plotly import build_multiplex_figure
 from tgraphportfolio.analysis.pipeline import PipelineResult
 from tgraphportfolio.analysis.transforms import available_transforms
 from tgraphportfolio.gui.evolution_settings_dialog import EvolutionSettingsDialog
+from tgraphportfolio.gui.data_table_dialog import DataTableDialog, eye_icon
 from tgraphportfolio.gui.mln_bridge import MLNBridge, inject_click_bridge
 from tgraphportfolio.gui.mln_settings_dialog import MLNSettingsDialog
 from tgraphportfolio.gui.styles import APP_STYLE, BG_SIDEBAR
@@ -155,6 +158,9 @@ class MainWindow(QMainWindow):
         self._mln_row_of: dict[tuple[str, str], int] = {}
         self._mln_bridge = MLNBridge()
         self._mln_channel: QWebChannel | None = None
+        self._pipeline_graph: nx.Graph | None = None
+        self._histogram_graph: nx.Graph | None = None
+        self._evolution_result: EvolutionResult | None = None
 
         root = QWidget()
         root.setObjectName("Root")
@@ -562,6 +568,17 @@ class MainWindow(QMainWindow):
         evolution_comm_layout.addWidget(self.evolution_community_container)
         self.tabs.addTab(evolution_comm_page, "Evolution: Communities")
 
+        self.btn_view_data = QToolButton()
+        self.btn_view_data.setObjectName("ViewDataButton")
+        self.btn_view_data.setIcon(eye_icon())
+        self.btn_view_data.setIconSize(QSize(18, 18))
+        self.btn_view_data.setFixedSize(28, 28)
+        self.btn_view_data.setToolTip("View data for the selected tab")
+        self.btn_view_data.setEnabled(False)
+        self.btn_view_data.clicked.connect(self._show_tab_data)
+        self.tabs.setCornerWidget(self.btn_view_data, Qt.Corner.TopRightCorner)
+        self.tabs.currentChanged.connect(self._update_view_data_button)
+
         layout.addWidget(self.tabs, stretch=3)
 
         log_title = QLabel("PROCESS LOG")
@@ -679,6 +696,110 @@ class MainWindow(QMainWindow):
         self._set_hist_placeholder(
             "Building… previous histogram cleared. See the process log for progress."
         )
+
+    def _update_view_data_button(self) -> None:
+        """Enable the eye button only when the selected tab has rendered data."""
+        if not hasattr(self, "btn_view_data"):
+            return
+        self.btn_view_data.setEnabled(self._tab_dataframe() is not None)
+
+    def _tab_dataframe(self) -> tuple[str, pl.DataFrame] | None:
+        """Return (tab title, frame) for the selected tab, or None if not rendered."""
+        title = self.tabs.tabText(self.tabs.currentIndex())
+        if title == "Network":
+            if self._pipeline_graph is None:
+                return None
+            return title, self._graph_edge_frame(self._pipeline_graph)
+        if title == "Degree histogram":
+            graph = self._histogram_graph or self._pipeline_graph
+            if graph is None:
+                return None
+            return title, self._graph_degree_frame(graph)
+        if title == "MLN":
+            if self._mln_result is None:
+                return None
+            return title, self._mln_edge_frame(self._mln_result)
+        if title == "MLN: Metrics":
+            if self._mln_result is None:
+                return None
+            return title, self._mln_result.centrality_df
+        if title == "MLN: Community":
+            if self._mln_result is None:
+                return None
+            return title, self._mln_result.community_df
+        evo = self._evolution_result
+        if evo is None:
+            return None
+        if title == "Evolution: Degrees":
+            return title, evo.node_metrics.filter(pl.col("metric") == "weighted_degree")
+        if title == "Evolution: Centrality":
+            metric = self._evolution_config.centrality
+            return title, evo.node_metrics.filter(pl.col("metric") == metric)
+        if title == "Evolution: Extended Metrics":
+            return title, evo.network_metrics
+        if title == "Evolution: Communities":
+            if evo.community_metrics.is_empty():
+                return None
+            return title, evo.community_metrics
+        return None
+
+    @staticmethod
+    def _graph_edge_frame(graph: nx.Graph) -> pl.DataFrame:
+        rows = [
+            {
+                "source": str(u),
+                "target": str(v),
+                "weight": float(data.get("weight", 1.0)),
+            }
+            for u, v, data in graph.edges(data=True)
+        ]
+        if not rows:
+            return pl.DataFrame(
+                schema={"source": pl.Utf8, "target": pl.Utf8, "weight": pl.Float64}
+            )
+        return pl.DataFrame(rows)
+
+    @staticmethod
+    def _graph_degree_frame(graph: nx.Graph) -> pl.DataFrame:
+        degree = dict(graph.degree())
+        weighted = dict(graph.degree(weight="weight"))
+        nodes = list(graph.nodes())
+        if not nodes:
+            return pl.DataFrame(
+                schema={
+                    "node": pl.Utf8,
+                    "degree": pl.Int64,
+                    "weighted_degree": pl.Float64,
+                }
+            )
+        return pl.DataFrame(
+            {
+                "node": [str(n) for n in nodes],
+                "degree": [int(degree.get(n, 0)) for n in nodes],
+                "weighted_degree": [float(weighted.get(n, 0.0)) for n in nodes],
+            }
+        )
+
+    @staticmethod
+    def _mln_edge_frame(result: MLNResult) -> pl.DataFrame:
+        intra = result.intra.with_columns(pl.lit("intra").alias("edge_type"))
+        inter = result.inter.with_columns(pl.lit("inter").alias("edge_type"))
+        if intra.is_empty() and inter.is_empty():
+            return result.nodes
+        return pl.concat([intra, inter], how="diagonal")
+
+    def _show_tab_data(self) -> None:
+        """Open a cloned, filterable table of the selected tab's data."""
+        payload = self._tab_dataframe()
+        if payload is None:
+            return
+        title, frame = payload
+        DataTableDialog(frame, title=title, parent=self).exec()
+
+    def _clear_pipeline_tables(self) -> None:
+        self._pipeline_graph = None
+        self._histogram_graph = None
+        self._update_view_data_button()
 
     def _create_threshold_slider(
         self,
@@ -855,6 +976,8 @@ class MainWindow(QMainWindow):
 
                 # Redraw canvas without resizing
                 canvas.draw_idle()
+                self._histogram_graph = new_graph
+                self._update_view_data_button()
 
                 # Re-attach cursor
                 try:
@@ -1095,9 +1218,8 @@ class MainWindow(QMainWindow):
             self.btn_run,
         ):
             widget.setEnabled(enabled)
-        self.btn_evolution_settings.setEnabled(
-            enabled and self.chk_evolution.isChecked()
-        )
+        # Evolution settings should be configurable anytime (independent of checkbox)
+        self.btn_evolution_settings.setEnabled(enabled)
         self.cmb_filter_col.setEnabled(enabled and self.radio_filter_column.isChecked())
         self.cmb_filter_val.setEnabled(enabled and self.radio_filter_column.isChecked())
         self.txt_filter_where.setEnabled(
@@ -1207,6 +1329,7 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("Starting…")
         self._append_log("Starting pipeline…")
         # Clear any previously rendered views before the new run.
+        self._clear_pipeline_tables()
         self.web.setHtml(self._building_html())
         self._set_hist_building()
         if self._evolution_enabled_this_run:
@@ -1218,6 +1341,7 @@ class MainWindow(QMainWindow):
         else:
             self._clear_mln_tabs()
         self.tabs.setCurrentIndex(0)
+        self._update_view_data_button()
 
         # Keep strong Python refs — a local worker is GC'd and the thread dies
         # before run() executes (see "QThread: Destroyed while thread is still running").
@@ -1338,6 +1462,9 @@ class MainWindow(QMainWindow):
         self._temp_html = Path(tmp.name)
         self.web.load(QUrl.fromLocalFile(str(self._temp_html.resolve())))
         self._show_histogram_png(result.degree_hist_fig)
+        self._pipeline_graph = result.graph
+        self._histogram_graph = result.graph
+        self._update_view_data_button()
 
         # Store prepared data for evolution worker
         if self._worker is not None:
@@ -1377,6 +1504,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.lbl_status.setText("Failed.")
         self._append_log(f"ERROR: {message}")
+        self._clear_pipeline_tables()
         self._set_hist_placeholder("Build failed — histogram unavailable.")
         self._set_evolution_deg_placeholder("Build failed — metrics unavailable.")
         self._set_evolution_cent_placeholder("Build failed — metrics unavailable.")
@@ -1509,6 +1637,7 @@ class MainWindow(QMainWindow):
         self.tbl_mln_nodes.setRowCount(0)
         self._mln_row_of = {}
         self._mln_result = None
+        self._update_view_data_button()
 
     def _show_mln_metrics(self, fig: Figure) -> None:
         try:
@@ -1692,6 +1821,7 @@ class MainWindow(QMainWindow):
         self._show_mln_community(result.community_fig)
         self._append_log("MLN rendered.")
         self._cleanup_mln_worker()
+        self._update_view_data_button()
         self._continue_to_evolution()
 
     def _on_mln_failed(self, message: str) -> None:
@@ -1921,16 +2051,18 @@ class MainWindow(QMainWindow):
         self.evolution_community_layout.addWidget(label)
 
     def _on_evolution_toggled(self, checked: bool) -> None:
-        """Enable/disable the evolution settings button with its checkbox."""
-        self.btn_evolution_settings.setEnabled(checked)
+        """Handle the evolution checkbox toggle (no action needed for settings button)."""
+        # Evolution settings button is always available for configuration
 
     def _clear_evolution_tabs(self, message: str | None = None) -> None:
         """Blank all four evolution canvases (evolution disabled or cancelled)."""
         text = message or "Evolution is disabled for this build."
+        self._evolution_result = None
         self._set_evolution_deg_placeholder(text)
         self._set_evolution_cent_placeholder(text)
         self._set_evolution_extended_placeholder(text)
         self._set_evolution_community_placeholder(text)
+        self._update_view_data_button()
 
     def _set_evolution_building(self) -> None:
         """Set building state for evolution tabs."""
@@ -2174,6 +2306,7 @@ class MainWindow(QMainWindow):
         # Clear all visualizations
         # Clear network canvas
         self.web.setHtml(self._placeholder_html())
+        self._clear_pipeline_tables()
         self._clear_mln_tabs("Render cancelled.")
         self._clear_evolution_tabs("Render cancelled.")
 
@@ -2271,7 +2404,9 @@ class MainWindow(QMainWindow):
         self._show_evolution_centrality_png(result.centrality_fig)
         self._show_evolution_extended_png(result.extended_metrics_fig)
         self._show_evolution_community_png(result.community_fig)
+        self._evolution_result = result
         self.lbl_status.setText("Network and evolution analysis complete.")
+        self._update_view_data_button()
 
         self._evolution_worker = None
         self._evolution_worker_thread = None
@@ -2282,10 +2417,12 @@ class MainWindow(QMainWindow):
         if self._is_stale(self._evolution_worker):
             return
         self._append_log(f"Evolution ERROR: {message}")
+        self._evolution_result = None
         self._set_evolution_deg_placeholder(f"Failed: {message}")
         self._set_evolution_cent_placeholder(f"Failed: {message}")
         self._set_evolution_extended_placeholder(f"Failed: {message}")
         self._set_evolution_community_placeholder(f"Failed: {message}")
+        self._update_view_data_button()
         self._evolution_worker = None
         self._evolution_worker_thread = None
         self._set_busy(False)

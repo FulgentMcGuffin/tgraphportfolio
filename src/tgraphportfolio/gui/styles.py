@@ -261,6 +261,43 @@ QPushButton#SecondaryButton:hover {{
     color: {TEXT};
     border-color: #bae6fd;
 }}
+QToolButton#ViewDataButton {{
+    background-color: {BG_CONTROL};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    padding: 0;
+    margin: 2px 6px 0 0;
+}}
+QToolButton#ViewDataButton:hover {{
+    background-color: {BG_CONTROL_HOVER};
+    border-color: #bae6fd;
+}}
+QToolButton#ViewDataButton:disabled {{
+    background-color: #151820;
+    border-color: #475569;
+}}
+QTableView {{
+    background-color: {BG_CONTROL};
+    color: #ffffff;
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    gridline-color: #334155;
+    selection-background-color: {ACCENT};
+    selection-color: #ffffff;
+    alternate-background-color: #243044;
+}}
+QHeaderView::section {{
+    background-color: {BG_SIDEBAR};
+    color: {TEXT};
+    border: 1px solid #334155;
+    padding: 4px 18px 4px 6px;
+    font-weight: 600;
+}}
+QTableView::item:selected {{
+    background-color: {ACCENT};
+    color: #ffffff;
+}}
 QPushButton#CancelButton {{
     background-color: #7f1d1d;
     color: #fecaca;

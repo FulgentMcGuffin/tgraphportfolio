@@ -45,7 +45,7 @@ In the GUI, point the sidebar at a DuckDB or SQLite database, choose columns / f
 
 | Multi-Layer network | Multi-Layer community |
 |:---:|:---:|
-| ![MLN for DAX and CAC](rsrc/images/cac_dax_mln.png) | ![MLN community for CAC and DAX](rsrc/images/cac_dax_mln_community.png) |
+| ![MLN for MIB/DAX/CAC](rsrc/images/mib_dax_cac_mln.png) | ![MLN community for CAC and DAX](rsrc/images/cac_dax_mln_community.png) |
 
 
 | Linked network | Degree distribution |

@@ -83,6 +83,11 @@ from tgraphportfolio.gui.workers import (
     PipelineWorker,
 )
 
+# How long Cancel Render waits for a worker to unwind before detaching from it.
+# Long enough for a cooperative worker sitting on a progress checkpoint, short
+# enough that the button never feels stuck.
+CANCEL_GRACE_MS = 250
+
 
 def _force_dark_surface(widget: QWidget, color: str = BG_SIDEBAR) -> None:
     """Ensure opaque dark fills even when platform styles ignore QSS backgrounds."""
@@ -142,6 +147,10 @@ class MainWindow(QMainWindow):
         self._mln_layer_column: str | None = None
         self._mln_enabled_this_run = False
         self._evolution_enabled_this_run = False
+        # Workers detached by Cancel Render, kept alive until their thread
+        # actually exits. Dropping the last Python reference to a still-running
+        # QThread/worker lets Qt delete the C++ object underneath it and crash.
+        self._retired_workers: list[tuple] = []
         self._last_config: PipelineConfig | None = None
         self._mln_row_of: dict[tuple[str, str], int] = {}
         self._mln_bridge = MLNBridge()
@@ -1100,9 +1109,16 @@ class MainWindow(QMainWindow):
             self.btn_run.setEnabled(False)
 
     def _set_busy(self, busy: bool) -> None:
+        """Toggle run/cancel only -- every other control stays usable.
+
+        A run happens on background threads, so the rest of the sidebar can be
+        edited while it works (setting up the next build). Only "Build network"
+        is blocked, because starting a second run on top of a live one is the
+        one genuinely unsafe action.
+        """
         self._busy = busy
-        self._set_controls_enabled(not busy)
-        self.btn_cancel.setEnabled(busy)  # Cancel button only enabled while rendering
+        self.btn_run.setEnabled(not busy and self._db_path is not None)
+        self.btn_cancel.setEnabled(busy)
 
     # -------------------------------------------------------------- run
     def _selected_transforms(self) -> list[str]:
@@ -1178,9 +1194,10 @@ class MainWindow(QMainWindow):
         self._evolution_enabled_this_run = self.chk_evolution.isChecked()
         self._last_config = config
 
-        # New run: clear any cancellation requested by a previous run so this
-        # one isn't stillborn (checked inside the worker's progress/status callbacks).
-        self._cancel_event.clear()
+        # A *fresh* event per run. Clearing the shared one would resurrect a
+        # worker discarded by a previous cancel, which would then keep running
+        # and emit into the new run.
+        self._cancel_event = threading.Event()
 
         self._set_busy(True)
         self.progress.setValue(0)
@@ -1224,10 +1241,14 @@ class MainWindow(QMainWindow):
         self._worker_thread.start()
 
     def _on_status(self, message: str) -> None:
+        if self._is_stale(self._worker):
+            return
         self.lbl_status.setText(message)
         self._append_log(message)
 
     def _on_progress(self, done: int, total: int, desc: str) -> None:
+        if self._is_stale(self._worker):
+            return
         if total <= 0:
             return
         pct = int(100 * done / total)
@@ -1246,11 +1267,58 @@ class MainWindow(QMainWindow):
         )
         self.lbl_status.setText(f"Computing pairs: {desc}")
 
+    def _is_stale(self, current) -> bool:
+        """True when a signal came from a worker we have already detached from.
+
+        Cancel Render stops waiting for threads, so a discarded worker can still
+        emit afterwards -- possibly while a *new* run is under way. Acting on
+        those signals would overwrite the current run's results, or null its
+        thread references (which crashes Qt when the live QThread is later
+        garbage-collected).
+
+        Identity comes from ``QObject.sender()`` rather than a bound lambda:
+        connecting a lambda gives Qt no receiver object, so it invokes the slot
+        DIRECTLY on the worker thread instead of queueing it to the GUI thread,
+        and touching widgets from there corrupts the heap. Bound methods keep
+        the connection queued, which is required for correctness here.
+
+        ``_retired_workers`` keeps discarded senders alive, so sender() cannot
+        dangle. Outside signal delivery it is None, which reads as "current" --
+        the right answer for a handler invoked directly.
+        """
+        sender = self.sender()
+        return sender is not None and sender is not current
+
+    def _retire_worker(self, worker, thread) -> None:
+        """Hold a detached worker/thread until the thread finishes.
+
+        Cancel Render stops waiting for threads, so without this the last
+        Python reference would drop while the thread is still running and Qt
+        would delete the underlying C++ objects out from under it.
+        """
+        if worker is None and thread is None:
+            return
+        if thread is not None and not thread.isRunning():
+            return
+        entry = (worker, thread)
+        self._retired_workers.append(entry)
+        if thread is not None:
+            thread.finished.connect(lambda e=entry: self._release_retired(e))
+
+    def _release_retired(self, entry) -> None:
+        """Drop a retired worker once its thread has actually exited."""
+        try:
+            self._retired_workers.remove(entry)
+        except ValueError:
+            pass
+
     def _cleanup_worker(self) -> None:
         self._worker = None
         self._worker_thread = None
 
     def _on_finished(self, result: object) -> None:
+        if self._is_stale(self._worker):
+            return
         if not isinstance(result, PipelineResult):
             self._on_failed(f"Unexpected pipeline result type: {type(result)!r}")
             return
@@ -1304,6 +1372,8 @@ class MainWindow(QMainWindow):
             self._set_busy(False)
 
     def _on_failed(self, message: str) -> None:
+        if self._is_stale(self._worker):
+            return
         self.progress.setValue(0)
         self.lbl_status.setText("Failed.")
         self._append_log(f"ERROR: {message}")
@@ -1323,6 +1393,8 @@ class MainWindow(QMainWindow):
         must be safe to run on an already-cleaned-up UI — no popups here,
         unlike ``_on_failed``.
         """
+        if self._is_stale(self._worker):
+            return
         self._cleanup_worker()
 
     # ============================================================================
@@ -1466,7 +1538,7 @@ class MainWindow(QMainWindow):
 
     def _on_mln_toggled(self, checked: bool) -> None:
         """Enable/clear the layer dropdown to match the MLN checkbox."""
-        self.cmb_mln_layer.setEnabled(checked and not self._busy)
+        self.cmb_mln_layer.setEnabled(checked)
         if checked:
             self._reload_mln_columns()
         else:
@@ -1593,16 +1665,22 @@ class MainWindow(QMainWindow):
         self._mln_worker_thread = None
 
     def _on_mln_progress(self, done: int, total: int, desc: str) -> None:
+        if self._is_stale(self._mln_worker):
+            return
         if total <= 0:
             return
         self.progress.setValue(int(100 * done / total))
         self.lbl_status.setText(f"MLN: {desc}")
 
     def _on_mln_status(self, message: str) -> None:
+        if self._is_stale(self._mln_worker):
+            return
         self.lbl_status.setText(message)
         self._append_log(message)
 
     def _on_mln_finished(self, result: object) -> None:
+        if self._is_stale(self._mln_worker):
+            return
         if not isinstance(result, MLNResult):
             self._on_mln_failed(f"Unexpected MLN result type: {type(result)!r}")
             return
@@ -1617,6 +1695,8 @@ class MainWindow(QMainWindow):
         self._continue_to_evolution()
 
     def _on_mln_failed(self, message: str) -> None:
+        if self._is_stale(self._mln_worker):
+            return
         self._append_log(f"MLN ERROR: {message}")
         self._clear_mln_tabs(f"MLN failed: {message}")
         self._cleanup_mln_worker()
@@ -1629,6 +1709,8 @@ class MainWindow(QMainWindow):
         ``_cancel_render`` performs the UI cleanup and the chain must stop here,
         so this only drops the worker refs (see ``_on_cancelled``).
         """
+        if self._is_stale(self._mln_worker):
+            return
         self._cleanup_mln_worker()
 
     # ------------------------------------------------------- MLN interactivity
@@ -1840,7 +1922,7 @@ class MainWindow(QMainWindow):
 
     def _on_evolution_toggled(self, checked: bool) -> None:
         """Enable/disable the evolution settings button with its checkbox."""
-        self.btn_evolution_settings.setEnabled(checked and not self._busy)
+        self.btn_evolution_settings.setEnabled(checked)
 
     def _clear_evolution_tabs(self, message: str | None = None) -> None:
         """Blank all four evolution canvases (evolution disabled or cancelled)."""
@@ -2058,31 +2140,32 @@ class MainWindow(QMainWindow):
         self._append_log("Cancelling render...")
         self._cancel_event.set()
 
-        # Stop pipeline worker (bounded wait: the cancellation flag above
-        # should make this return almost immediately, not hang indefinitely).
-        if self._worker_thread and self._worker_thread.isRunning():
-            self._worker_thread.quit()
-            if not self._worker_thread.wait(2000):
-                self._append_log("WARNING: pipeline worker did not stop within 2s.")
+        # Give each worker a brief chance to unwind, then carry on regardless.
+        # Workers only notice cancellation inside their progress callbacks, so a
+        # thread that is momentarily between checkpoints would otherwise stall
+        # the GUI here for the whole timeout. Detaching instead keeps the button
+        # instant; the discarded thread exits on its next checkpoint and its
+        # signals are ignored (see _is_stale).
+        for thread, label in (
+            (self._worker_thread, "Pipeline"),
+            (self._mln_worker_thread, "MLN"),
+            (self._evolution_worker_thread, "Evolution"),
+        ):
+            if thread is None or not thread.isRunning():
+                continue
+            thread.quit()
+            if thread.wait(CANCEL_GRACE_MS):
+                self._append_log(f"{label} cancelled.")
             else:
-                self._append_log("Pipeline cancelled.")
+                self._append_log(
+                    f"{label} is finishing in the background; its results will "
+                    "be discarded."
+                )
 
-        # Stop MLN worker
-        if self._mln_worker_thread and self._mln_worker_thread.isRunning():
-            self._mln_worker_thread.quit()
-            if not self._mln_worker_thread.wait(2000):
-                self._append_log("WARNING: MLN worker did not stop within 2s.")
-            else:
-                self._append_log("MLN analysis cancelled.")
-
-        # Stop evolution worker
-        if self._evolution_worker_thread and self._evolution_worker_thread.isRunning():
-            self._evolution_worker_thread.quit()
-            if not self._evolution_worker_thread.wait(2000):
-                self._append_log("WARNING: evolution worker did not stop within 2s.")
-            else:
-                self._append_log("Evolution analysis cancelled.")
-
+        # Detach from the workers unconditionally: from here on they are stale.
+        self._retire_worker(self._worker, self._worker_thread)
+        self._retire_worker(self._mln_worker, self._mln_worker_thread)
+        self._retire_worker(self._evolution_worker, self._evolution_worker_thread)
         self._cleanup_worker()
         self._cleanup_mln_worker()
         self._evolution_worker = None
@@ -2158,6 +2241,8 @@ class MainWindow(QMainWindow):
 
     def _on_evolution_progress(self, done: int, total: int, desc: str) -> None:
         """Handle evolution progress update."""
+        if self._is_stale(self._evolution_worker):
+            return
         if total <= 0:
             return
         # Log periodically
@@ -2166,11 +2251,15 @@ class MainWindow(QMainWindow):
 
     def _on_evolution_status(self, message: str) -> None:
         """Handle evolution status message."""
+        if self._is_stale(self._evolution_worker):
+            return
         self.lbl_status.setText(message)
         self._append_log(message)
 
     def _on_evolution_finished(self, result: object) -> None:
         """Handle evolution completion."""
+        if self._is_stale(self._evolution_worker):
+            return
         if not isinstance(result, EvolutionResult):
             self._on_evolution_failed(
                 f"Unexpected evolution result type: {type(result)!r}"
@@ -2190,6 +2279,8 @@ class MainWindow(QMainWindow):
 
     def _on_evolution_failed(self, message: str) -> None:
         """Handle evolution failure."""
+        if self._is_stale(self._evolution_worker):
+            return
         self._append_log(f"Evolution ERROR: {message}")
         self._set_evolution_deg_placeholder(f"Failed: {message}")
         self._set_evolution_cent_placeholder(f"Failed: {message}")
@@ -2206,6 +2297,8 @@ class MainWindow(QMainWindow):
         only needs to drop the worker refs (see ``_on_cancelled`` for why no
         popup/UI work happens here).
         """
+        if self._is_stale(self._evolution_worker):
+            return
         self._evolution_worker = None
         self._evolution_worker_thread = None
 

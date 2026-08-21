@@ -1,9 +1,11 @@
 # TGraph Portfolio
 
 ## Overview
-The goal of this project is to provide deep insights into the temporal evolution of network structures derived from relationship patterns in multi-asset panel data over time. By transforming static cross-sectional relationships into a chronological sequence of networks (a time series of graphs), the platform exposes the underlying structural shifts, transition dynamics, and regime changes in multivariate time series.
+The goal of this project is to provide deep insights into the temporal evolution of network structures derived from relationship patterns in multi-asset panel data over time. By transforming static cross-sectional relationships into a chronological sequence of networks (a time series of graphs), the platform exposes the underlying structural shifts, transition dynamics, and regime changes in multivariate time series. Through filtering, networks can be broken down in time (e.g. overnight vs. intraday or open/close/delivery etc.) giving further insight into the changing nature of relationships.
 
-While the default analysis utilizes equity market panel datasets (such as DAX30 or CAC40 price returns), the system is built on a generalized, abstract database backend. It can be applied directly to **any multivariate time-series panel dataset** that has a temporal index, a node identifier (representing entities such as stocks, sensors, assets, or regions), and numeric series values.
+The system is built on a generalized, abstract database backend. It can be applied directly to **any multivariate time-series panel dataset** that has a temporal index, a node identifier (representing entities such as stocks, sensors, assets, or regions), and numeric series values.
+
+In addition to single network evolution it also provides an interface for a multi-layer network to provide additional insights: the same panel can be split along a categorical dimension (index, sector, maturity, venue) into a stack of layers that are analysed together as one multiplex.
 
 ### Methods Covered
 The toolkit integrates several statistical and network analysis techniques:
@@ -28,6 +30,7 @@ The toolkit integrates several statistical and network analysis techniques:
    - **Centrality Trajectories**: Plots eigenvector, betweenness, or degree centrality of the most variable nodes over time to identify systemic shifts.
    - **Regime and Change-Point Detection**: Employs `graspologic`'s `latent_position_test` to statistically test whether consecutive window network snapshots share the same latent positions, flagging significant structural transitions with Holm-Bonferroni correction.
    - **Latent Trajectories**: Models dynamic community tracking and multi-graph latent position embedding via Joint/Omnibus Spectral Embedding.
+7. **Multi-Layer (Multiplex) Networks**: Splits the panel into one network *layer* per distinct value of a chosen column (e.g. one layer per equity index or per maturity term), links the same node across the layers it appears in, and analyses the stack as a single multiplex — with an interactive 3D view, per-layer connectivity metrics, and cross-layer-stable community detection.
 
 ## Quickstart
 
@@ -40,6 +43,11 @@ uv run tgraph-gui
 
 In the GUI, point the sidebar at a DuckDB or SQLite database, choose columns / filters, then click **Build Network**.
 
+| Multi-Layer network | Multi-Layer community |
+|:---:|:---:|
+| ![MLN for DAX and CAC](rsrc/images/cac_dax_mln.png) | ![MLN community for CAC and DAX](rsrc/images/cac_dax_mln_community.png) |
+
+
 | Linked network | Degree distribution |
 |:---:|:---:|
 | ![Distance correlation network for DAX closing price returns](rsrc/images/dax_dcor.png) | ![Degree distribution for CAC closing price returns](rsrc/images/cac_degrees.png) |
@@ -51,6 +59,7 @@ In the GUI, point the sidebar at a DuckDB or SQLite database, choose columns / f
 | Centrality trajectories | Community membership evolution |
 |:---:|:---:|
 | ![Eigenvector centrality trajectories for HSI50 closing price returns](rsrc/images/hsi_centrality.png) | ![Node community membership heatmap for CAC40 closing price returns](rsrc/images/cac_community.png) |
+
 
 ### Optional: Alternating Conditional Expectations (ACE)
 
@@ -174,9 +183,9 @@ Automatic community detection assigns nodes to clusters within each window using
 ### Typical Workflow
 
 1. **Load Data**: Point the GUI at a DuckDB or SQLite database with multivariate time-series panel data
-2. **Build Network**: Select date, node, and value columns; choose a connection measure
-3. **Open Evolution Settings**: Configure windowing (size, step), centrality measure, and community detection method
-4. **Run Analysis**: Click **Analyze Evolution** to compute all windows and generate visualizations
+2. **Configure the Network**: Select date, node, and value columns; choose a connection measure
+3. **Enable Evolution**: Expand the **Evolution** group and tick **Run Evolution** (unchecked by default, since it is far slower than a single network), then open **Evolution Settings** to configure windowing (size, step), centrality measure, and community detection method
+4. **Run Analysis**: Click **Build network**. The single network is built first, then the multi-layer network if enabled, then the evolution windows
 5. **Explore Results**: 
    - Check weighted-degree heatmap to spot nodes that became central/peripheral
    - Review centrality trajectories (top/bottom plots) for behavioral shifts
@@ -193,6 +202,99 @@ Automatic community detection assigns nodes to clusters within each window using
   - Weekly step: ~10–30 minutes (5× more windows)
   - Expanding mode: similar window count as rolling, but later windows are slower (larger samples)
 - **Smoke test first**: Always run on a truncated date range (e.g., 1 year) before full-history analysis
+
+## Multi-Layer Network (MLN) Analysis
+
+### MLN Overview
+
+Where evolution analysis slices the panel along **time**, multi-layer analysis slices it along a **categorical dimension**. Each distinct value of a chosen column becomes a network *layer*: one layer per equity index, per maturity term, per sector, per venue — whatever the data offers. The layers are then stacked into a single **multiplex** graph and analysed together rather than as unrelated networks.
+
+This answers questions a single pooled network cannot:
+
+- **Is structure comparable across layers?** Does the DAX cluster the way the CAC does, or are they organised differently?
+- **Which nodes are central in one layer but peripheral in another?** A node's role need not be constant across contexts.
+- **Do communities survive the layer boundary?** Cross-layer-stable community IDs make "the same community" a meaningful claim.
+- **How much of the structure is within-layer versus between-layer?** The intra/inter edge composition quantifies it.
+
+Critically, the multiplex is built with the **same connection measure, date range, transforms, optional filter and independence threshold as the single network** on the "Network" tab. It is a different view of the same analysis, not a separate one with its own hidden defaults.
+
+### Anatomy of the Multiplex
+
+- **Nodes** are `(node, layer)` pairs. `BMW.DE` in `DAX30` and `BMW.DE` in some other index are distinct vertices.
+- **Intra-layer edges** come from the correlation network computed *within* that layer, pruned by the independence threshold. Edge strength is the connection measure itself.
+- **Inter-layer edges** join the same node across every pair of layers it appears in. Unlike maturities, arbitrary categories have no natural ordering, so these are not restricted to "adjacent" layers.
+
+**Layers frequently share no nodes at all**, and that is a property of the data rather than a fault. Two equity indices with disjoint constituents produce a multiplex with zero inter-layer edges — the process log says so explicitly ("no node appears in more than one layer") so the empty inter-layer set never reads as a bug.
+
+**Transforms are applied per layer, not globally.** `daily_returns` computes `pct_change` grouped by node; if a node appears in two layers, transforming the pooled frame would compute returns across interleaved rows from different layers. The MLN subsets by layer first, then transforms, then pivots.
+
+### Choosing the Layer Column
+
+Tick **Run MLN** in the sidebar, then pick a layer column. Only genuinely categorical columns are offered — the dropdown filters to columns that are:
+
+- not already used as the date, node-name or series-value column;
+- **text** with at most 50 distinct values, or **integer** with fewer than 20 (integers are allowed as a deliberate exception for coded categories);
+- not continuous (floats, dates and timestamps never qualify);
+- not single-valued (at least 2 distinct values, or there is no second layer to speak of).
+
+If the layer column is the *same* column the Optional Filter pins to a single value, every row would land in one layer and the multiplex would collapse to the single network. The GUI detects this when you press **Build network**, warns, skips the MLN for that run, and lets the single network and evolution proceed normally.
+
+### MLN Settings
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| **Centrality measure** | eigenvector | Centrality shown in the node × layer heatmap: `eigenvector`, `betweenness`, or `degree` |
+| **Jaccard similarity** | 0.60 | Minimum member overlap for two per-layer communities to be treated as the *same* community across layers |
+| **Community method** | fixed | k-selection strategy per layer — the same five strategies as evolution (see [Community Detection Methods](#community-detection-methods)) |
+| **Max communities** | 10 | For `fixed`: exact k per layer. For the optimisation methods: upper bound of the search. |
+
+#### Cross-Layer Community Alignment
+
+Communities are detected **independently within each layer** (ASE + KMeans, with k chosen per layer by the selected method — no information crosses the layer boundary). That independence is what makes per-layer structure honest, but it also means cluster label `0` in one layer has nothing to do with label `0` in another.
+
+The **Jaccard threshold** repairs this. After detection, per-layer communities are matched against the communities already seen using Hungarian assignment on Jaccard overlap of their member sets. Two communities in different layers are given the same global ID when their overlap reaches the threshold; anything below it, and anything left unmatched, receives a fresh ID.
+
+The consequence is that **a colour means the same group of nodes in every layer** — which is the only thing that makes the community heatmap readable across columns. Raise the threshold to demand stronger evidence before declaring two communities equivalent (yielding more, finer communities); lower it to merge more aggressively.
+
+### The Three MLN Tabs
+
+The MLN tabs sit immediately to the right of the single-network tabs and clear and repopulate in step with the evolution tabs.
+
+#### MLN — Interactive 3D Multiplex
+
+An interactive Plotly view: one translucent plane per layer, nodes arranged on a shared circle so a node keeps the same angular position in every layer, intra-layer edges coloured by connection strength, and vertical inter-layer links where nodes are shared.
+
+- **Rotate, pan and zoom** the stack directly.
+- **Hover** any node or edge for its identity, layer and weight.
+- **Visible layers** checklist toggles layers in and out. Re-rendering reuses the already-computed multiplex, so toggling is immediate and never recomputes the networks.
+- **Node table** beside the view lists every `(node, layer)` pair; clicking a node in the 3D graph selects and scrolls to its row.
+
+#### MLN: Metrics
+
+A composite figure: the top third carries per-layer **edge counts** (intra versus inter) and the **intra/inter composition**, the lower two-thirds a **node × layer centrality heatmap** using the centrality chosen in MLN Settings. Cells for a node absent from a layer are greyed rather than drawn as a low value, so absence and low centrality stay visually distinct.
+
+Note that an inter-layer edge touches two layers and is therefore counted under both in the per-layer chart; the figure states this beneath the composition panel.
+
+#### MLN: Community
+
+The node × layer community heatmap, coloured by the **Jaccard-aligned global community ID**. Reading across a row shows whether a node keeps its community across layers; reading down a column shows how a layer partitions.
+
+### Execution Model
+
+MLN analysis is opt-in (**Run MLN**), runs on a background thread, and logs to the process log with an `MLN:` prefix so its output never interleaves confusingly with evolution's. When both are enabled the order is:
+
+```text
+Build network  →  MLN  →  Evolution
+```
+
+MLN runs first so its results are on screen while the (typically longer) evolution analysis continues. Every stage is interruptible: **Cancel Render** stops the whole chain and clears the canvases, and if MLN fails or is skipped, evolution still runs.
+
+### MLN Performance Considerations
+
+- Cost is `L × O(n_layer²)` measure evaluations for `L` layers. This is usually *cheaper* than one pooled network, since `(Σnᵢ)² > Σnᵢ²` when layers partition the nodes.
+- The eligible-column rules cap `L` implicitly; the log warns when a run exceeds 12 layers, since each layer is a full O(n²) pass.
+- Expensive measures (distance correlation, mutual information, DTW) multiply across layers — prefer a cheap measure such as Spearman, Kendall Tau or Chatterjee ξ when exploring, then re-run with the expensive one.
+- Cancellation is checked per node pair, so a runaway build is always escapable.
 
 ## References
 
@@ -240,4 +342,19 @@ Automatic community detection assigns nodes to clusters within each window using
 ### Multi-Graph Latent Position Embedding
 * **Omnibus Embedding Tutorial**: Simultaneously embedding multiple matched-vertex graphs into a common canonical coordinate system: [graspologic Tutorial](https://graspologic-org.github.io/graspologic/tutorials/embedding/Omnibus.html).
 * **Foundational Paper**: Levin, K., Athreya, A., Tang, M., Lyzinski, V., & Priebe, C. E. (2017). *"A central limit theorem for an omnibus embedding of multiple random graphs and implications for multiscale network inference."* arXiv preprint arXiv:1705.09355: [arXiv Paper](https://arxiv.org/abs/1705.09355).
+
+### Multi-Layer / Multiplex Networks
+
+* **Multilayer Networks (survey)**: The formal framework for networks composed of multiple interacting layers, including multiplex networks where the same nodes recur across layers: [Wikipedia](https://en.wikipedia.org/wiki/Multidimensional_network).
+  - **Foundational Survey**: Kivelä, M., Arenas, A., Barthelemy, M., Gleeson, J. P., Moreno, Y., & Porter, M. A. (2014). *"Multilayer networks."* Journal of Complex Networks, 2(3), 203-271: [DOI (Oxford)](https://doi.org/10.1093/comnet/cnu016) | [arXiv](https://arxiv.org/abs/1309.7233).
+  - **Structure and Dynamics**: Boccaletti, S., et al. (2014). *"The structure and dynamics of multilayer networks."* Physics Reports, 544(1), 1-122: [DOI (Elsevier)](https://doi.org/10.1016/j.physrep.2014.07.001).
+* **MultiLayerNetViz**: 3D multiplex visualization this project's MLN view is derived from: [GitHub Repository](https://github.com/FulgentMcGuffin/MultiLayerNetViz).
+* **Plotly**: Interactive, browser-rendered 3D graphing used for the multiplex view: [Documentation](https://plotly.com/python/) | [GitHub](https://github.com/plotly/plotly.py).
+
+### Community Alignment Across Layers
+
+* **Jaccard Index**: Set-overlap similarity used to decide when two per-layer communities represent the same group: [Wikipedia](https://en.wikipedia.org/wiki/Jaccard_index).
+* **Hungarian (Kuhn-Munkres) Algorithm**: Optimal one-to-one assignment, used here to match each layer's communities against those already seen: [Wikipedia](https://en.wikipedia.org/wiki/Hungarian_algorithm).
+  - **Reference**: Kuhn, H. W. (1955). *"The Hungarian method for the assignment problem."* Naval Research Logistics Quarterly, 2(1-2), 83-97: [DOI (Wiley)](https://doi.org/10.1002/nav.3800020109).
+  - **Implementation**: [`scipy.optimize.linear_sum_assignment`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html).
 

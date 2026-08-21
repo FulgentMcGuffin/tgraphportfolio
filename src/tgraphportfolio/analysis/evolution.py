@@ -340,6 +340,7 @@ def build_adjacency_tensor(
     graphs: dict[date, nx.Graph],
     *,
     min_nodes: int = 2,
+    progress: ProgressCallback | None = None,
 ) -> tuple[list[date], list[str], np.ndarray]:
     """Stack per-window graphs into a binary (T, n, n) adjacency tensor.
 
@@ -371,12 +372,15 @@ def build_adjacency_tensor(
             f"Only {len(common_nodes)} common nodes across all windows -- "
             f"too few for community detection."
         )
-    tensor = np.stack(
-        [
-            nx.to_numpy_array(graphs[we], nodelist=common_nodes, weight=None)
-            for we in window_ends
-        ]
-    )
+    # Built as a loop rather than a comprehension so ``progress`` fires per
+    # window: callers hang their cancellation check on it, and stacking many
+    # windows is otherwise a multi-second stretch with no way to interrupt.
+    mats = []
+    for idx, we in enumerate(window_ends):
+        if progress is not None:
+            progress(idx, len(window_ends), f"adjacency {we}")
+        mats.append(nx.to_numpy_array(graphs[we], nodelist=common_nodes, weight=None))
+    tensor = np.stack(mats)
     return window_ends, common_nodes, tensor
 
 
@@ -630,7 +634,7 @@ def compute_community_metrics(
     if status is not None:
         status("Building common-node adjacency tensor...")
     window_ends, common_nodes, tensor = build_adjacency_tensor(
-        graphs, min_nodes=min_nodes
+        graphs, min_nodes=min_nodes, progress=progress
     )
 
     n_windows = len(window_ends)

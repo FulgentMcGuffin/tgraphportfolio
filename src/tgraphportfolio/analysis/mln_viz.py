@@ -30,6 +30,9 @@ INTRA_COLOR = "#0ea5e9"
 INTER_COLOR = "#a78bfa"
 GRID = "#334155"
 
+# Above this many nodes the y-axis labels are thinned -- see _set_node_ticks.
+MAX_NODE_TICKS = 60
+
 
 def _empty(message: str, width: int, height: int, dpi: int) -> Figure:
     fig = Figure(figsize=(width, height), dpi=dpi)
@@ -95,7 +98,7 @@ def render_mln_metrics(
         hspace=0.42,
         wspace=0.22,
         left=0.08,
-        right=0.97,
+        right=0.93,  # leaves room for the heatmap colorbar and its label
         top=0.92,
         bottom=0.12,
     )
@@ -232,8 +235,7 @@ def _draw_centrality_heatmap(
     )
     ax.set_xticks(np.arange(len(layers)))
     ax.set_xticklabels(layers, rotation=45, ha="right")
-    ax.set_yticks(np.arange(len(nodes)))
-    ax.set_yticklabels(nodes, fontsize=max(4, min(7, int(360 / max(len(nodes), 1)))))
+    _set_node_ticks(ax, nodes)
     ax.set_xlabel(layer_label)
     ax.set_ylabel(node_label)
     ax.set_title(
@@ -245,6 +247,25 @@ def _draw_centrality_heatmap(
     cbar.ax.tick_params(colors=FG, labelsize=7)
     cbar.outline.set_edgecolor(GRID)
     cbar.set_label(centrality_name.title(), color=MUTED, fontsize=8)
+
+
+def _set_node_ticks(ax, nodes: list[str]) -> None:
+    """Label the node axis, thinning the labels when there are many nodes.
+
+    Drawing one text object per node dominates ``canvas.draw()`` on the GUI
+    thread (measured: ~2.3s for 500 nodes), and at that density the labels are
+    too small to read anyway. Showing an evenly-spaced subset keeps the axis
+    orientable and the redraw fast.
+    """
+    n = len(nodes)
+    if n <= MAX_NODE_TICKS:
+        ax.set_yticks(np.arange(n))
+        ax.set_yticklabels(nodes, fontsize=max(4, min(7, int(360 / max(n, 1)))))
+        return
+    step = int(np.ceil(n / MAX_NODE_TICKS))
+    idx = np.arange(0, n, step)
+    ax.set_yticks(idx)
+    ax.set_yticklabels([nodes[i] for i in idx], fontsize=6)
 
 
 def _pivot_matrix(
@@ -308,8 +329,7 @@ def render_mln_communities(
     )
     ax.set_xticks(np.arange(len(layers)))
     ax.set_xticklabels(layers, rotation=45, ha="right")
-    ax.set_yticks(np.arange(len(nodes)))
-    ax.set_yticklabels(nodes, fontsize=max(4, min(7, int(360 / max(len(nodes), 1)))))
+    _set_node_ticks(ax, nodes)
     ax.set_xlabel(layer_label)
     ax.set_ylabel(node_label)
     ax.set_title(f"{node_label} x {layer_label} Community", fontsize=13, weight="bold")

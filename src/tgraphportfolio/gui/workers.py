@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from datetime import date
 
@@ -42,6 +43,15 @@ from tgraphportfolio.analysis.mln_viz import (
 from tgraphportfolio.analysis.multiplex_data import multiplex_tables
 from tgraphportfolio.analysis.pipeline import PipelineResult, run_pipeline
 
+# Progress callbacks fire once per node pair -- tens of thousands of times for a
+# large run. Every emit is a queued cross-thread signal that makes the GUI thread
+# repaint the progress bar and status label, which is what made the window
+# sluggish while a build was running. Emitting at most this often keeps the UI
+# informative (well above human perception) at a fraction of the cost. The
+# cancellation check still runs on *every* call, so responsiveness to Cancel
+# Render is unaffected.
+_PROGRESS_EMIT_INTERVAL_S = 0.08
+
 
 class WorkerCancelled(Exception):
     """Raised from inside a progress/status callback to unwind a cancelled worker.
@@ -53,6 +63,28 @@ class WorkerCancelled(Exception):
     unmodified) computation and back into ``run()``, where it is caught
     separately from real failures.
     """
+
+
+class _ThrottledProgressMixin:
+    """Cancellation check on every tick; signal emission rate-limited."""
+
+    def _init_throttle(self, cancel_event: threading.Event | None) -> None:
+        self._cancel_event = cancel_event or threading.Event()
+        self._last_emit = 0.0
+
+    def _progress_wrapper(self, done: int, total: int, desc: str) -> None:
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
+        now = time.monotonic()
+        # Always emit the terminal tick so the bar reliably reaches 100%.
+        if done >= total or (now - self._last_emit) >= _PROGRESS_EMIT_INTERVAL_S:
+            self._last_emit = now
+            self.progress.emit(done, total, desc)
+
+    def _status_wrapper(self, msg: str) -> None:
+        if self._cancel_event.is_set():
+            raise WorkerCancelled()
+        self.status.emit(msg)
 
 
 @dataclass
@@ -88,7 +120,7 @@ class MLNResult:
     community_fig: Figure
 
 
-class PipelineWorker(QObject):
+class PipelineWorker(_ThrottledProgressMixin, QObject):
     """Runs ``run_pipeline`` off the UI thread."""
 
     progress = Signal(int, int, str)  # done, total, description
@@ -108,22 +140,16 @@ class PipelineWorker(QObject):
         self._config = config
         self._data_cache = data_cache
         self._edge_settings = edge_settings or {}
-        self._cancel_event = cancel_event or threading.Event()
+        self._init_throttle(cancel_event)
         # Will be populated during run
         self.df_returns: pl.DataFrame | None = None
         self.dates: list[date] | None = None
         # Store original date column name for reference
         self.date_column_original: str = config.date_column
 
-    def _progress(self, done: int, total: int, desc: str) -> None:
-        if self._cancel_event.is_set():
-            raise WorkerCancelled()
-        self.progress.emit(done, total, desc)
-
-    def _status(self, msg: str) -> None:
-        if self._cancel_event.is_set():
-            raise WorkerCancelled()
-        self.status.emit(msg)
+    # Aliases kept so run() reads the same as the other workers.
+    _progress = _ThrottledProgressMixin._progress_wrapper
+    _status = _ThrottledProgressMixin._status_wrapper
 
     @Slot()
     def run(self) -> None:
@@ -214,7 +240,7 @@ class PipelineWorker(QObject):
             self.failed.emit(str(exc))
 
 
-class EvolutionWorker(QObject):
+class EvolutionWorker(_ThrottledProgressMixin, QObject):
     """Background worker for temporal network evolution analysis."""
 
     progress = Signal(int, int, str)  # done, total, description
@@ -236,7 +262,7 @@ class EvolutionWorker(QObject):
         self.dates = dates
         self.evolution_config = evolution_config
         self.data_cache = data_cache
-        self._cancel_event = cancel_event or threading.Event()
+        self._init_throttle(cancel_event)
 
     @Slot()
     def run(self) -> None:
@@ -309,20 +335,8 @@ class EvolutionWorker(QObject):
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"Evolution analysis failed: {str(exc)}")
 
-    def _progress_wrapper(self, done: int, total: int, desc: str) -> None:
-        """Wrap progress callback; raises if cancellation was requested."""
-        if self._cancel_event.is_set():
-            raise WorkerCancelled()
-        self.progress.emit(done, total, desc)
 
-    def _status_wrapper(self, msg: str) -> None:
-        """Wrap status callback; raises if cancellation was requested."""
-        if self._cancel_event.is_set():
-            raise WorkerCancelled()
-        self.status.emit(msg)
-
-
-class MLNWorker(QObject):
+class MLNWorker(_ThrottledProgressMixin, QObject):
     """Background worker for multi-layer network analysis.
 
     Runs between the pipeline and evolution stages. Every status line is
@@ -347,7 +361,7 @@ class MLNWorker(QObject):
         self._config = config
         self._mln_config = mln_config
         self._edge_settings = edge_settings or {}
-        self._cancel_event = cancel_event or threading.Event()
+        self._init_throttle(cancel_event)
 
     @Slot()
     def run(self) -> None:
@@ -455,15 +469,3 @@ class MLNWorker(QObject):
             self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"MLN analysis failed: {str(exc)}")
-
-    def _progress_wrapper(self, done: int, total: int, desc: str) -> None:
-        """Wrap progress callback; raises if cancellation was requested."""
-        if self._cancel_event.is_set():
-            raise WorkerCancelled()
-        self.progress.emit(done, total, desc)
-
-    def _status_wrapper(self, msg: str) -> None:
-        """Wrap status callback; raises if cancellation was requested."""
-        if self._cancel_event.is_set():
-            raise WorkerCancelled()
-        self.status.emit(msg)

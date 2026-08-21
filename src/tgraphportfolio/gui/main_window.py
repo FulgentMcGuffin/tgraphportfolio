@@ -241,30 +241,6 @@ class MainWindow(QMainWindow):
         self.cmb_value.currentTextChanged.connect(self._on_role_column_changed)
         form.addWidget(self.cmb_value)
 
-        mln_body = self._collapsible_section(form, "MLN", collapsed=True)
-        self.chk_mln = QCheckBox("MLN")
-        self.chk_mln.setToolTip(
-            "Build a multi-layer network: one layer per distinct value of the "
-            "column below, using the same measure, dates and filter as the "
-            "single network."
-        )
-        self.chk_mln.toggled.connect(self._on_mln_toggled)
-        mln_body.addWidget(self.chk_mln)
-        self.cmb_mln_layer = QComboBox()  # uneditable by design
-        self.cmb_mln_layer.setToolTip(
-            "Layer column. Only discrete, low-cardinality columns qualify, and "
-            "never the date, node-name or series-value columns."
-        )
-        mln_body.addWidget(self.cmb_mln_layer)
-        self.btn_mln_settings = QPushButton("⚙ MLN Settings")
-        self.btn_mln_settings.setObjectName("SecondaryButton")
-        self.btn_mln_settings.clicked.connect(self._show_mln_settings)
-        self.btn_mln_settings.setToolTip(
-            "Configure MLN centrality, community method and Jaccard threshold"
-        )
-        mln_body.addWidget(self.btn_mln_settings)
-        self.cmb_mln_layer.setEnabled(False)  # MLN starts unchecked
-
         filter_body = self._collapsible_section(form, "OPTIONAL FILTER", collapsed=True)
         self.radio_filter_column = QRadioButton("Column value")
         self.radio_filter_where = QRadioButton("WHERE clause")
@@ -363,6 +339,30 @@ class MainWindow(QMainWindow):
             "Configure network evolution analysis parameters"
         )
         form.addWidget(self.btn_evolution_settings)
+
+        mln_body = self._collapsible_section(form, "MLN", collapsed=True)
+        self.chk_mln = QCheckBox("MLN")
+        self.chk_mln.setToolTip(
+            "Build a multi-layer network: one layer per distinct value of the "
+            "column below, using the same measure, dates and filter as the "
+            "single network."
+        )
+        self.chk_mln.toggled.connect(self._on_mln_toggled)
+        mln_body.addWidget(self.chk_mln)
+        self.cmb_mln_layer = QComboBox()  # uneditable by design
+        self.cmb_mln_layer.setToolTip(
+            "Layer column. Only discrete, low-cardinality columns qualify, and "
+            "never the date, node-name or series-value columns."
+        )
+        mln_body.addWidget(self.cmb_mln_layer)
+        self.btn_mln_settings = QPushButton("⚙ MLN Settings")
+        self.btn_mln_settings.setObjectName("SecondaryButton")
+        self.btn_mln_settings.clicked.connect(self._show_mln_settings)
+        self.btn_mln_settings.setToolTip(
+            "Configure MLN centrality, community method and Jaccard threshold"
+        )
+        mln_body.addWidget(self.btn_mln_settings)
+        self.cmb_mln_layer.setEnabled(False)  # MLN starts unchecked
 
         form.addSpacing(8)
         self.btn_run = QPushButton("Build network")
@@ -591,11 +591,15 @@ class MainWindow(QMainWindow):
             toggle.setText(f"{'▾' if expanded else '▸'}  {title}")
             body.setVisible(expanded)
 
+        # Add to the parent layout BEFORE the first setVisible: hiding a widget
+        # while it is still parentless marks it as a hidden top-level window,
+        # which on some platforms makes it reappear as a floating panel instead
+        # of expanding inline.
+        parent.addWidget(toggle)
+        parent.addWidget(body)
         toggle.toggled.connect(_sync)
         toggle.setChecked(not collapsed)
         _sync(not collapsed)
-        parent.addWidget(toggle)
-        parent.addWidget(body)
         return inner
 
     @staticmethod
@@ -1451,6 +1455,11 @@ class MainWindow(QMainWindow):
 
     def _reload_mln_columns(self) -> None:
         """Repopulate the layer dropdown with columns eligible as layer keys."""
+        # The date/name/value combos are built before the MLN group (which now
+        # sits just above "Build network"), and their currentTextChanged is
+        # wired straight here -- so tolerate being called before it exists.
+        if getattr(self, "chk_mln", None) is None:
+            return
         if not self.chk_mln.isChecked() or not self._db_path:
             return
         table = self.cmb_table.currentText()
@@ -1626,16 +1635,22 @@ class MainWindow(QMainWindow):
     def _populate_mln_table(self, result: MLNResult) -> None:
         """Fill the node table and the (node, layer) -> row index for O(1) lookup."""
         rows = result.nodes.select(["issuer", "term"]).rows()
-        self.tbl_mln_nodes.setRowCount(len(rows))
-        self.tbl_mln_nodes.setHorizontalHeaderLabels(
-            [result.node_column, result.layer_column]
-        )
-        self._mln_row_of = {}
-        for row_idx, (node, layer) in enumerate(rows):
-            self.tbl_mln_nodes.setItem(row_idx, 0, QTableWidgetItem(str(node)))
-            self.tbl_mln_nodes.setItem(row_idx, 1, QTableWidgetItem(str(layer)))
-            self._mln_row_of[(str(node), str(layer))] = row_idx
-        self.tbl_mln_nodes.resizeColumnsToContents()
+        # Suspend repaints while filling: every setItem would otherwise schedule
+        # a view update, which is the bulk of the cost for a few thousand rows.
+        self.tbl_mln_nodes.setUpdatesEnabled(False)
+        try:
+            self.tbl_mln_nodes.setRowCount(len(rows))
+            self.tbl_mln_nodes.setHorizontalHeaderLabels(
+                [result.node_column, result.layer_column]
+            )
+            self._mln_row_of = {}
+            for row_idx, (node, layer) in enumerate(rows):
+                self.tbl_mln_nodes.setItem(row_idx, 0, QTableWidgetItem(str(node)))
+                self.tbl_mln_nodes.setItem(row_idx, 1, QTableWidgetItem(str(layer)))
+                self._mln_row_of[(str(node), str(layer))] = row_idx
+            self.tbl_mln_nodes.resizeColumnsToContents()
+        finally:
+            self.tbl_mln_nodes.setUpdatesEnabled(True)
 
     def _on_mln_layer_toggled(self, _item) -> None:
         """Re-render the 3D view for the new layer selection.
@@ -2083,6 +2098,11 @@ class MainWindow(QMainWindow):
         self._evolution_config.independent_threshold = float(
             self.spin_threshold.value()
         )
+        # Evolution uses the same connection measure as the Network and MLN
+        # tabs, rather than silently always using distance correlation.
+        if self._last_config is not None:
+            self._evolution_config.measure = self._last_config.measure
+        self._evolution_config.edge_settings = self._edge_settings.to_dict()
 
         self._evolution_worker_thread = QThread(self)
         self._evolution_worker = EvolutionWorker(

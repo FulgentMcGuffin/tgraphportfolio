@@ -28,6 +28,10 @@ warnings.filterwarnings("ignore", message="Number of distinct clusters.*found sm
 ProgressCallback = Callable[[int, int, str], None]
 StatusCallback = Callable[[str], None]
 
+# Sub-steps reported per window, so progress (and therefore the cancellation
+# check that rides on it) advances during a window rather than only between them.
+PROGRESS_SCALE = 100
+
 
 class CommunityMethod(str, Enum):
     """Community detection optimization method for rolling-window networks.
@@ -67,6 +71,13 @@ class EvolutionConfig:
         max_communities: For FIXED method, exact k per window; for other methods,
             upper bound when searching for optimal k per window.
         community_method: Strategy for determining optimal k per window; see CommunityMethod enum.
+        measure: Connection measure used to build each window's network. The GUI
+            sets this from the sidebar's selection so evolution matches the
+            Network and MLN tabs; the default preserves the historical behaviour
+            for callers that do not set it.
+        edge_settings: Optional measure-specific parameters (e.g.
+            ``{"conditional_quantile": 0.9}``), passed through to
+            ``measures.compute_measure``.
     """
 
     window_size: int = 252
@@ -78,6 +89,8 @@ class EvolutionConfig:
     n_top_nodes: int = 10
     max_communities: int = 10
     community_method: CommunityMethod = CommunityMethod.FIXED
+    measure: str = "distance_correlation"
+    edge_settings: dict | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.community_method, str):
@@ -250,7 +263,10 @@ def compute_evolution_metrics(
         metrics (one row per window), and the per-window graphs themselves.
     """
     if status is not None:
-        status(f"Generating {cfg.window_size}-obs windows (step={cfg.step})...")
+        status(
+            f"Generating {cfg.window_size}-obs windows (step={cfg.step}) "
+            f"using {cfg.measure}..."
+        )
 
     windows = list(
         generate_windows(dates, cfg.window_size, cfg.step, expanding=cfg.expanding)
@@ -260,9 +276,13 @@ def compute_evolution_metrics(
     graphs: dict[date, nx.Graph] = {}
     n_windows = len(windows)
 
+    # Progress is reported on a 0..PROGRESS_SCALE sub-range per window so the
+    # bar advances *within* a window too, not only between windows.
+    total_units = max(n_windows, 1) * PROGRESS_SCALE
+
     for w_idx, (window_start, window_end, window_dates) in enumerate(windows):
         if progress is not None:
-            progress(w_idx, n_windows, f"{window_end}")
+            progress(w_idx * PROGRESS_SCALE, total_units, f"{window_end}")
 
         window_df = df_returns.filter(
             pl.col(date_column).is_between(window_start, window_end)
@@ -274,8 +294,26 @@ def compute_evolution_metrics(
         if len(nodes) < cfg.min_nodes:
             continue
 
+        # Forwarding a per-pair progress callback is what makes a window
+        # interruptible: callers detect cancellation inside this callback, and
+        # a single window's measure can run for tens of seconds on a large
+        # network. Without it the UI froze until the whole window finished.
+        def _pair_progress(done: int, total: int, desc: str, _w: int = w_idx) -> None:
+            if progress is None:
+                return
+            frac = (done / total) if total else 1.0
+            progress(
+                int(_w * PROGRESS_SCALE + frac * PROGRESS_SCALE),
+                total_units,
+                f"{window_end}: {desc}",
+            )
+
         measure_df = measures.compute_measure(
-            "distance_correlation", wide.select(nodes), nodes
+            cfg.measure,
+            wide.select(nodes),
+            nodes,
+            progress=_pair_progress,
+            edge_settings=cfg.edge_settings,
         )
         graph = network.build_corr_nx(
             measure_df, independent_threshold=cfg.independent_threshold
@@ -289,7 +327,7 @@ def compute_evolution_metrics(
         graphs[window_end] = graph
 
     if progress is not None:
-        progress(n_windows, n_windows, "done")
+        progress(total_units, total_units, "done")
 
     return EvolutionMetricsResult(
         node_metrics=pl.DataFrame(node_rows),

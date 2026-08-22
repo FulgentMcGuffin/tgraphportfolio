@@ -179,3 +179,66 @@ def detect_all_community_methods(
         )
         diagnostics_by_method[label] = diagnostics
     return communities_by_method, diagnostics_by_method
+
+
+def detect_multilayer_communities(
+    graph: nx.Graph,
+    method: CommunityMethod | str = CommunityMethod.FIXED,
+    *,
+    max_clusters: int = 4,
+    ase_n_components: int | None = None,
+    random_state: int = 0,
+) -> dict[str, object]:
+    """ASE + KMeans on a multiplex snapshot (supra-adjacency).
+
+    This is the multi-layer analogue of ``compute_window_communities``: one
+    multiplex graph plays the role of a single-network window. *k* is chosen
+    from that snapshot only (no lookahead across time).
+
+    Args:
+        graph: Multiplex NetworkX graph with nodes ``(issuer, layer)``.
+        method: k-selection strategy (see ``CommunityMethod``).
+        max_clusters: Exact k for FIXED; upper bound for the other methods.
+        ase_n_components: ASE dimension (default ``sqrt(n)``).
+        random_state: Seed for reproducibility.
+
+    Returns:
+        Dict with ``communities`` (node -> label), ``n_clusters``, ``score``,
+        ``method``, and ``inertia`` (alias of ``score`` for older notebooks).
+    """
+    if isinstance(method, str):
+        method = CommunityMethod(method)
+    nodes = sorted(graph.nodes())
+    n_nodes = len(nodes)
+    empty: dict[str, object] = {
+        "communities": {},
+        "n_clusters": 0,
+        "score": float("nan"),
+        "inertia": float("nan"),
+        "method": METHOD_LABELS[method],
+    }
+    if n_nodes < 3:
+        return empty
+    adjacency = nx.to_numpy_array(graph, nodelist=nodes, weight=None)
+    k_cap = max(2, min(max_clusters, n_nodes - 1))
+    n_comp = ase_n_components
+    if n_comp is not None:
+        n_comp = max(1, min(int(n_comp), n_nodes - 1))
+    try:
+        labels, selected_k, score = compute_window_communities(
+            adjacency,
+            max_clusters=k_cap,
+            ase_n_components=n_comp,
+            method=method,
+            random_state=random_state,
+        )
+    except Exception as exc:
+        empty["error"] = str(exc)
+        return empty
+    return {
+        "communities": {node: int(lab) for node, lab in zip(nodes, labels)},
+        "n_clusters": int(selected_k),
+        "score": float(score),
+        "inertia": float(score),
+        "method": METHOD_LABELS[method],
+    }
